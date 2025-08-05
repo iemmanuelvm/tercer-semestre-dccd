@@ -1,0 +1,69 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Paquetes/compilados
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Pruebas y cobertura
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.nox/
+.tox/
+
+# Tipado / linters / herramientas
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.dmypy.json
+.pyre/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Configs locales de IDE/SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs y archivos temporales
+*.log
+*.tmp
+*.bak
+
+# =========================
+# Modelos y artefactos ML
+# =========================
+# Pesos y checkpoints (PyTorch, Lightning, etc.)
+*.pt
+*.pth
+*.ckpt
+
+# Otros formatos de modelos (por si acaso)
+*.onnx
+*.tflite
+
+# =========================
+# Datos y salidas
+# =========================
+# Ignora contenido pero conserva carpetas
+data/*
+!data/.gitkeep
+
+outputs/*
+!outputs/.gitkeep
