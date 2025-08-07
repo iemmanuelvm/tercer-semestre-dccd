@@ -1,11 +1,3 @@
-"""Training script for 1-D U-Net that reports
-∙ MSE, RMSE, **RRMSE** and **CC (Pearson’s r)** for both training and validation sets.
-
-RRMSE = RMSE / mean(|y_true|).
-CC is computed with the unbiased formula using running sums to avoid storing
-all predictions in memory.
-"""
-
 import math
 import torch
 import torch.nn as nn
@@ -14,20 +6,17 @@ from torch.amp import GradScaler
 from data_preparation_runner import prepare_data
 from neural_network_runner import UNet1D
 
-# --------------------------- Data preparation --------------------------- #
 X_train, y_train, X_test, y_test = prepare_data(
     combin_num=11,
     train_per=0.9,
     noise_type="EMG",
 )
 
-# Convert to tensors
 X_train = torch.as_tensor(X_train, dtype=torch.float32)
 y_train = torch.as_tensor(y_train, dtype=torch.float32)
 X_test = torch.as_tensor(X_test,  dtype=torch.float32)
 y_test = torch.as_tensor(y_test,  dtype=torch.float32)
 
-# Flatten test: [11, 3740, 1, 512] → [41410, 1, 512]
 X_test = X_test.reshape(-1, 1, 512)
 y_test = y_test.reshape(-1, 1, 512)
 
@@ -36,7 +25,6 @@ print(f"y_train {y_train.shape}")
 print(f"X_test  {X_test.shape}")
 print(f"y_test  {y_test.shape}")
 
-# --------------------------- Data loaders ------------------------------ #
 train_loader = DataLoader(
     TensorDataset(X_train, y_train),
     batch_size=64,
@@ -48,10 +36,9 @@ valid_loader = DataLoader(
     TensorDataset(X_test, y_test),
     batch_size=64,
     shuffle=False,
-    drop_last=False,  # keep every example
+    drop_last=False,
 )
 
-# --------------------------- Model & Optimizer ------------------------- #
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = UNet1D(base=64, dropout=0.1).to(device)
 print(
@@ -63,13 +50,10 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode="min", patience=3, factor=0.5
 )
 
-# --------------------------- Helpers ----------------------------------- #
-EPS = 1e-12  # numerical stability
+EPS = 1e-12
 
 
 def update_running_stats(batch_pred, batch_true, acc):
-    """Accumulate sums required for RMSE, RRMSE and CC."""
-    # Flatten to (N,)
     p = batch_pred.view(-1).detach().cpu()
     t = batch_true.view(-1).detach().cpu()
     bs = p.numel()
@@ -95,7 +79,6 @@ def finalize_metrics(acc):
     mae = acc["mae_sum"] / n
     rrmse = rmse / (acc["sum_abs_t"] / n + EPS)
 
-    # Pearson correlation coefficient
     num = n * acc["sum_pt"] - acc["sum_p"] * acc["sum_t"]
     den = math.sqrt(
         (n * acc["sum_p2"] - acc["sum_p"] ** 2) *
@@ -106,7 +89,6 @@ def finalize_metrics(acc):
     return mse, rmse, rrmse, mae, cc
 
 
-# --------------------------- Training loop ----------------------------- #
 EPOCHS = 500
 use_amp = torch.cuda.is_available()
 scaler = GradScaler(enabled=use_amp)
@@ -131,13 +113,11 @@ for epoch in range(1, EPOCHS + 1):
         scaler.step(optimizer)
         scaler.update()
 
-        # accumulate metrics
         update_running_stats(pred, yb, acc_tr)
 
     train_mse, train_rmse, train_rrmse, train_mae, train_cc = finalize_metrics(
         acc_tr)
 
-    # --------- Validation phase --------- #
     model.eval()
     acc_val = {k: 0.0 for k in acc_tr}
 
@@ -158,11 +138,9 @@ for epoch in range(1, EPOCHS + 1):
         f"val MSE {val_mse:.6f} RMSE {val_rmse:.6f} RRMSE {val_rrmse:.6f} CC {val_cc:.4f}"
     )
 
-    # checkpoint on best validation MSE
     if val_mse < best_val:
         best_val = val_mse
         best_state = {k: v.detach().cpu()
                       for k, v in model.state_dict().items()}
 
-# Optional: save best model
 torch.save(best_state, "best_unet1d_cc_rrmse_emg.pth")
