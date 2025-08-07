@@ -149,7 +149,7 @@ def index_segment(x: torch.Tensor, combo: int, seg: int) -> torch.Tensor:
 
 # --- Carga de pesos (mismo modelo/hiperparámetros que en entrenamiento) ---
 model = UNet1D(base=64, dropout=0.1).to(device)
-state = torch.load("cnn1d_unet_emg.pt", map_location=device)
+state = torch.load("best_unet1d_cc_rrmse_emg.pth", map_location=device)
 model.load_state_dict(state)
 model.eval()
 
