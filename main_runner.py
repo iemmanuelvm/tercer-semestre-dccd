@@ -1,11 +1,16 @@
 import math
+import csv
+import random
+from typing import Dict
+
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, random_split
 from torch.cuda.amp import GradScaler
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
 from data_preparation_runner import prepare_data
 from neural_network_runner import Transformer1D
-import random
 
 # ---------------------------
 # Reproducibilidad y backend
@@ -45,57 +50,41 @@ use_cuda = torch.cuda.is_available()
 common_loader_kwargs = dict(
     pin_memory=use_cuda, num_workers=0 if use_cuda else 0)
 
-train_loader = DataLoader(
-    TensorDataset(X_train, y_train),
-    batch_size=64,
-    shuffle=True,
-    drop_last=True,
-    **common_loader_kwargs
-)
+# Split de validación desde el train (p.ej., 10%)
+full_train = TensorDataset(X_train, y_train)
+val_frac = 0.10
+val_len = int(len(full_train) * val_frac)
+train_len = len(full_train) - val_len
+train_ds, val_ds = random_split(full_train, [train_len, val_len])
 
-valid_loader = DataLoader(
-    TensorDataset(X_test, y_test),
-    batch_size=64,
-    shuffle=False,
-    drop_last=False,
-    **common_loader_kwargs
-)
+train_loader = DataLoader(train_ds, batch_size=64,
+                          shuffle=True,  drop_last=True,  **common_loader_kwargs)
+valid_loader = DataLoader(val_ds,   batch_size=64,
+                          shuffle=False, drop_last=False, **common_loader_kwargs)
+test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=64,
+                         shuffle=False, drop_last=False, **common_loader_kwargs)
 
 # ---------------------------
 # Modelo
 device = torch.device("cuda" if use_cuda else "cpu")
 model = Transformer1D(
     in_ch=1, out_ch=1,
-    d_model=256, depth=6, n_heads=16,
-    patch_size=4, ff_mult=4, dropout=0.1,
-    causal=False,
-    use_residual_in_out=True
+    d_model=192, depth=4, n_heads=6,
+    patch_size=4, ff_mult=3, dropout=0.2,
+    causal=False, use_residual_in_out=True
 ).to(device)
 print(
     f"Parameters (M): {sum(p.numel() for p in model.parameters()) / 1e6:.6f}")
 
 # ---------------------------
-# Optimizador + LR schedule (warmup + cosine) + AMP + clipping
-criterion = nn.MSELoss()
-base_lr = 3e-4  # más estable que 2e-3
+# Optimizador + LR schedule (CAWR) + AMP + clipping
+criterion = nn.SmoothL1Loss(beta=0.5)
 optimizer = torch.optim.AdamW(
-    model.parameters(), lr=base_lr, weight_decay=1e-2, betas=(0.9, 0.95))
+    model.parameters(), lr=3e-4, weight_decay=1e-3, betas=(0.9, 0.95))
 
-EPOCHS = 500
-steps_per_epoch = len(train_loader)
-total_steps = max(1, EPOCHS * steps_per_epoch)
-warmup_steps = max(1, int(0.1 * total_steps))  # 10% warmup
-
-
-def lr_lambda(step_idx: int):
-    # warmup lineal -> cosine
-    if step_idx < warmup_steps:
-        return (step_idx + 1) / warmup_steps
-    progress = (step_idx - warmup_steps) / max(1, total_steps - warmup_steps)
-    return 0.5 * (1.0 + math.cos(math.pi * progress))
-
-
-scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+# CosineAnnealingWarmRestarts: evita LR=0 con eta_min
+scheduler = CosineAnnealingWarmRestarts(
+    optimizer, T_0=50, T_mult=2, eta_min=3e-6)
 
 use_amp = use_cuda  # AMP solo si hay CUDA
 scaler = GradScaler(enabled=use_amp)
@@ -105,7 +94,7 @@ scaler = GradScaler(enabled=use_amp)
 EPS = 1e-12
 
 
-def update_running_stats(batch_pred, batch_true, acc):
+def update_running_stats(batch_pred: torch.Tensor, batch_true: torch.Tensor, acc: Dict[str, float]):
     p = batch_pred.view(-1).detach().cpu()
     t = batch_true.view(-1).detach().cpu()
     diff = p - t
@@ -120,15 +109,15 @@ def update_running_stats(batch_pred, batch_true, acc):
     acc["n"] += p.numel()
 
 
-def finalize_metrics(acc):
+def finalize_metrics(acc: Dict[str, float]):
     n = max(1, acc["n"])
     mse = acc["mse_sum"] / n
     rmse = math.sqrt(max(mse, 0.0))
     mae = acc["mae_sum"] / n
     rrmse = rmse / (acc["sum_abs_t"] / n + EPS)
     num = n * acc["sum_pt"] - acc["sum_p"] * acc["sum_t"]
-    den = math.sqrt(max((n * acc["sum_p2"] - acc["sum_p"] ** 2) *
-                        (n * acc["sum_t2"] - acc["sum_t"] ** 2), 0.0)) + EPS
+    den = math.sqrt(max((n * acc["sum_p2"] - acc["sum_p"] ** 2)
+                    * (n * acc["sum_t2"] - acc["sum_t"] ** 2), 0.0)) + EPS
     cc = num / den
     return mse, rmse, rrmse, mae, cc
 
@@ -137,17 +126,35 @@ def fresh_acc():
     return {k: 0.0 for k in ["mse_sum", "mae_sum", "sum_p", "sum_t", "sum_p2", "sum_t2", "sum_pt", "sum_abs_t", "n"]}
 
 
+def evaluate(model: nn.Module, loader: DataLoader):
+    model.eval()
+    acc = fresh_acc()
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
+            with torch.autocast(device_type="cuda" if use_amp else "cpu", enabled=use_amp):
+                pred = model(xb)
+            update_running_stats(pred, yb, acc)
+    return finalize_metrics(acc)
+
+
 # ---------------------------
 # Entrenamiento
+EPOCHS = 300
 best_val = float("inf")
 best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-global_step = 0
+
+metrics_log = []
+
+patience = 30
+bad_epochs = 0
 
 for epoch in range(1, EPOCHS + 1):
     model.train()
     acc_tr = fresh_acc()
 
-    for xb, yb in train_loader:
+    for step, (xb, yb) in enumerate(train_loader):
         xb = xb.to(device, non_blocking=True)
         yb = yb.to(device, non_blocking=True)
 
@@ -161,18 +168,16 @@ for epoch in range(1, EPOCHS + 1):
             pred = model(xb)
             loss = criterion(pred, yb)
 
-        # Backward con AMP + clipping seguro
+        # Backward con AMP + clipping
         scaler.scale(loss).backward()
-        # Unscale antes de clip para que funcione en FP32
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), max_norm=1.0)
-
         scaler.step(optimizer)
         scaler.update()
 
-        scheduler.step()
-        global_step += 1
+        # Scheduler por batch con epoch fraccional
+        scheduler.step(epoch + step / max(1, len(train_loader)))
 
         update_running_stats(pred, yb, acc_tr)
 
@@ -180,17 +185,8 @@ for epoch in range(1, EPOCHS + 1):
         acc_tr)
 
     # --------- Validación --------- #
-    model.eval()
-    acc_val = fresh_acc()
-    with torch.no_grad():
-        for xb, yb in valid_loader:
-            xb = xb.to(device, non_blocking=True)
-            yb = yb.to(device, non_blocking=True)
-            with torch.autocast(device_type="cuda" if use_amp else "cpu", enabled=use_amp):
-                pred = model(xb)
-            update_running_stats(pred, yb, acc_val)
-
-    val_mse, val_rmse, val_rrmse, val_mae, val_cc = finalize_metrics(acc_val)
+    val_mse, val_rmse, val_rrmse, val_mae, val_cc = evaluate(
+        model, valid_loader)
 
     current_lr = optimizer.param_groups[0]["lr"]
     print(
@@ -200,10 +196,93 @@ for epoch in range(1, EPOCHS + 1):
         f"lr {current_lr:.2e} | grad_norm {float(grad_norm):.2f}"
     )
 
-    if val_mse < best_val:
+    # Log por época
+    metrics_log.append({
+        "epoch": epoch,
+        "train_mse": train_mse,
+        "train_rmse": train_rmse,
+        "train_rrmse": train_rrmse,
+        "train_mae": train_mae,
+        "train_cc": train_cc,
+        "val_mse": val_mse,
+        "val_rmse": val_rmse,
+        "val_rrmse": val_rrmse,
+        "val_mae": val_mae,
+        "val_cc": val_cc,
+        "lr": float(current_lr),
+        "grad_norm": float(grad_norm),
+    })
+
+    # Early stopping + checkpoint best
+    if val_mse < best_val - 1e-5:
         best_val = val_mse
         best_state = {k: v.detach().cpu()
                       for k, v in model.state_dict().items()}
+        bad_epochs = 0
+    else:
+        bad_epochs += 1
 
-# Guardado
+    if bad_epochs >= patience:
+        print(
+            f"Early stopping en epoch {epoch} (sin mejora {patience} épocas).")
+        break
+
+# Guardar mejor modelo (según val)
 torch.save(best_state, "best_Transformer1D_cc_rrmse_emg.pth")
+
+# --------- Evaluación en TEST con el mejor estado --------- #
+model.load_state_dict(best_state, strict=True)
+test_mse, test_rmse, test_rrmse, test_mae, test_cc = evaluate(
+    model, test_loader)
+print(
+    f"[TEST] MSE {test_mse:.6f} RMSE {test_rmse:.6f} RRMSE {test_rrmse:.6f} "
+    f"MAE {test_mae:.6f} CC {test_cc:.4f}"
+)
+
+# ---------------------------
+# Guardar métricas a CSV (incluye fila final de test)
+csv_path = "metrics_log.csv"
+if len(metrics_log) > 0:
+    fieldnames = list(metrics_log[0].keys())
+    with open(csv_path, mode="w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in metrics_log:
+            writer.writerow(row)
+    print(f"Métricas de entrenamiento/validación guardadas en: {csv_path}")
+
+    # Añadir fila de test al final (sin epoch numérico)
+    with open(csv_path, mode="a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow({
+            "epoch": "TEST(best)",
+            "train_mse": "",
+            "train_rmse": "",
+            "train_rrmse": "",
+            "train_mae": "",
+            "train_cc": "",
+            "val_mse": "",
+            "val_rmse": "",
+            "val_rrmse": "",
+            "val_mae": "",
+            "val_cc": "",
+            "lr": "",
+            "grad_norm": "",
+        })
+    print("Fila de TEST agregada al CSV (como separador).")
+
+    # Guardar métricas de test en un CSV aparte (opcional)
+    with open("metrics_test_best.csv", mode="w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["mse", "rmse", "rrmse", "mae", "cc"])
+        writer.writeheader()
+        writer.writerow({
+            "mse":   test_mse,
+            "rmse":  test_rmse,
+            "rrmse": test_rrmse,
+            "mae":   test_mae,
+            "cc":    test_cc
+        })
+    print("Métricas de TEST(best) guardadas en: metrics_test_best.csv")
+else:
+    print("No hay métricas para guardar.")
