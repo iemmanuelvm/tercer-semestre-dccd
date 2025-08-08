@@ -1,11 +1,17 @@
+# train_eegdifus.py
 import math
+import random
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from torch.cuda.amp import GradScaler
 from data_preparation_runner import prepare_data
-from neural_network_runner import Transformer1D
-import random
+from eeg_difus import (
+    EEGDfusDenoiser,
+    make_beta_schedule,
+    diffusion_training_step,
+    ddpm_sample,
+)
 
 # ---------------------------
 # Reproducibilidad y backend
@@ -23,16 +29,10 @@ X_train, y_train, X_test, y_test = prepare_data(
     noise_type="EMG",
 )
 
-X_train = torch.as_tensor(X_train, dtype=torch.float32)
-y_train = torch.as_tensor(y_train, dtype=torch.float32)
-X_test = torch.as_tensor(X_test,  dtype=torch.float32)
-y_test = torch.as_tensor(y_test,  dtype=torch.float32)
-
-# >>> IMPORTANTE: dar forma [B, 1, 512] tanto a train como a test <<<
-X_train = X_train.reshape(-1, 1, 512)
-y_train = y_train.reshape(-1, 1, 512)
-X_test = X_test.reshape(-1, 1, 512)
-y_test = y_test.reshape(-1, 1, 512)
+X_train = torch.as_tensor(X_train, dtype=torch.float32).reshape(-1, 1, 512)
+y_train = torch.as_tensor(y_train, dtype=torch.float32).reshape(-1, 1, 512)
+X_test = torch.as_tensor(X_test,  dtype=torch.float32).reshape(-1, 1, 512)
+y_test = torch.as_tensor(y_test,  dtype=torch.float32).reshape(-1, 1, 512)
 
 print(f"X_train {X_train.shape}")
 print(f"y_train {y_train.shape}")
@@ -42,8 +42,7 @@ print(f"y_test  {y_test.shape}")
 # ---------------------------
 # Dataloaders
 use_cuda = torch.cuda.is_available()
-common_loader_kwargs = dict(
-    pin_memory=use_cuda, num_workers=0 if use_cuda else 0)
+common_loader_kwargs = dict(pin_memory=use_cuda, num_workers=0)
 
 train_loader = DataLoader(
     TensorDataset(X_train, y_train),
@@ -64,22 +63,19 @@ valid_loader = DataLoader(
 # ---------------------------
 # Modelo
 device = torch.device("cuda" if use_cuda else "cpu")
-model = Transformer1D(
-    in_ch=1, out_ch=1,
-    d_model=256, depth=6, n_heads=16,
-    patch_size=4, ff_mult=4, dropout=0.1,
-    causal=False,
-    use_residual_in_out=True
+model = EEGDfusDenoiser(
+    in_ch=1, hidden_dim=64, heads=1, qkv_dim=32, depth=3, dropout=0.1
 ).to(device)
+
 print(
     f"Parameters (M): {sum(p.numel() for p in model.parameters()) / 1e6:.6f}")
 
 # ---------------------------
 # Optimizador + LR schedule (warmup + cosine) + AMP + clipping
-criterion = nn.MSELoss()
-base_lr = 3e-4  # más estable que 2e-3
+base_lr = 3e-4
 optimizer = torch.optim.AdamW(
-    model.parameters(), lr=base_lr, weight_decay=1e-2, betas=(0.9, 0.95))
+    model.parameters(), lr=base_lr, weight_decay=1e-2, betas=(0.9, 0.95)
+)
 
 EPOCHS = 500
 steps_per_epoch = len(train_loader)
@@ -88,7 +84,6 @@ warmup_steps = max(1, int(0.1 * total_steps))  # 10% warmup
 
 
 def lr_lambda(step_idx: int):
-    # warmup lineal -> cosine
     if step_idx < warmup_steps:
         return (step_idx + 1) / warmup_steps
     progress = (step_idx - warmup_steps) / max(1, total_steps - warmup_steps)
@@ -97,7 +92,14 @@ def lr_lambda(step_idx: int):
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-use_amp = use_cuda  # AMP solo si hay CUDA
+# Difusión: schedule
+T = 500
+betas, alphas, alpha_bars = make_beta_schedule(
+    T=T, beta_start=1e-4, beta_end=2e-2)
+betas, alphas, alpha_bars = betas.to(
+    device), alphas.to(device), alpha_bars.to(device)
+
+use_amp = use_cuda
 scaler = GradScaler(enabled=use_amp)
 
 # ---------------------------
@@ -144,58 +146,70 @@ best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
 global_step = 0
 
 for epoch in range(1, EPOCHS + 1):
+    # --------- TRAIN (difusión) --------- #
     model.train()
-    acc_tr = fresh_acc()
+    run_tr_loss = 0.0
+    seen = 0
 
     for xb, yb in train_loader:
-        xb = xb.to(device, non_blocking=True)
-        yb = yb.to(device, non_blocking=True)
+        xb = xb.to(device, non_blocking=True)  # x̃ (ruidosa)
+        yb = yb.to(device, non_blocking=True)  # x0 (limpia)
 
-        # Sanitizar batch
         if not (torch.isfinite(xb).all() and torch.isfinite(yb).all()):
             continue
 
         optimizer.zero_grad(set_to_none=True)
-
         with torch.autocast(device_type="cuda" if use_amp else "cpu", enabled=use_amp):
-            pred = model(xb)
-            loss = criterion(pred, yb)
+            loss = diffusion_training_step(
+                model, x0=yb, x_tilde=xb, alpha_bars=alpha_bars
+            )
 
-        # Backward con AMP + clipping seguro
         scaler.scale(loss).backward()
-        # Unscale antes de clip para que funcione en FP32
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), max_norm=1.0)
-
         scaler.step(optimizer)
         scaler.update()
 
         scheduler.step()
         global_step += 1
+        bs = xb.size(0)
+        run_tr_loss += float(loss) * bs
+        seen += bs
 
-        update_running_stats(pred, yb, acc_tr)
+    train_loss = run_tr_loss / max(1, seen)
 
-    train_mse, train_rmse, train_rrmse, train_mae, train_cc = finalize_metrics(
-        acc_tr)
-
-    # --------- Validación --------- #
+    # --------- VALIDACIÓN (sampling DDPM) --------- #
     model.eval()
     acc_val = fresh_acc()
     with torch.no_grad():
+        # Para acelerar validación, submuestrea pasos
+        T_SAMPLE = 100
+        if T_SAMPLE < len(betas):
+            idx = torch.linspace(0, len(betas) - 1, T_SAMPLE).long().to(device)
+            betas_v = betas[idx]
+            alphas_v = alphas[idx]
+            alpha_bars_v = alpha_bars[idx]
+        else:
+            betas_v, alphas_v, alpha_bars_v = betas, alphas, alpha_bars
+
         for xb, yb in valid_loader:
-            xb = xb.to(device, non_blocking=True)
-            yb = yb.to(device, non_blocking=True)
-            with torch.autocast(device_type="cuda" if use_amp else "cpu", enabled=use_amp):
-                pred = model(xb)
-            update_running_stats(pred, yb, acc_val)
+            xb = xb.to(device, non_blocking=True)  # x̃
+            yb = yb.to(device, non_blocking=True)  # x0
+
+            y_hat = ddpm_sample(
+                model, x_tilde=xb,
+                betas=betas_v, alphas=alphas_v, alpha_bars=alpha_bars_v,
+                device=device
+            )
+            update_running_stats(y_hat, yb, acc_val)
 
     val_mse, val_rmse, val_rrmse, val_mae, val_cc = finalize_metrics(acc_val)
-
     current_lr = optimizer.param_groups[0]["lr"]
+
     print(
         f"Epoch {epoch:03d} | "
-        f"train MSE {train_mse:.6f} RMSE {train_rmse:.6f} RRMSE {train_rrmse:.6f} CC {train_cc:.4f} | "
+        f"train loss {train_loss:.6f} | "
         f"val MSE {val_mse:.6f} RMSE {val_rmse:.6f} RRMSE {val_rrmse:.6f} CC {val_cc:.4f} | "
         f"lr {current_lr:.2e} | grad_norm {float(grad_norm):.2f}"
     )
@@ -206,4 +220,5 @@ for epoch in range(1, EPOCHS + 1):
                       for k, v in model.state_dict().items()}
 
 # Guardado
-torch.save(best_state, "best_Transformer1D_cc_rrmse_emg.pth")
+torch.save(best_state, "best_EEGDfus_DDPM.pth")
+print("Guardado: best_EEGDfus_DDPM.pth")
