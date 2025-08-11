@@ -1,5 +1,5 @@
-# train_emg_denoiser.py
-# Innovative EMG→EEG denoiser: ResUNet-TCN + SE + Self-Attention (bottleneck)
+# train_eog_denoiser.py
+# Innovative eog→EEG denoiser: ResUNet-TCN + SE + Self-Attention (bottleneck)
 import math
 import os
 import numpy as np
@@ -17,27 +17,27 @@ torch.manual_seed(42)
 np.random.seed(42)
 
 # Load data (your code)
-X_train_EMG, y_train_EMG, X_test_EMG, y_test_EMG = prepare_data(
-    combin_num=11, train_per=0.9, noise_type='EMG'
+X_train_eog, y_train_eog, X_test_eog, y_test_eog = prepare_data(
+    combin_num=11, train_per=0.9, noise_type='EOG'
 )
 
 # Cast to tensors
-X_train_EMG = torch.FloatTensor(X_train_EMG)  # [N, 1, 512]
-y_train_EMG = torch.FloatTensor(y_train_EMG)  # [N, 1, 512]
-X_test_EMG = torch.FloatTensor(X_test_EMG)   # [11, M, 1, 512]
-y_test_EMG = torch.FloatTensor(y_test_EMG)   # [11, M, 1, 512]
+X_train_eog = torch.FloatTensor(X_train_eog)  # [N, 1, 512]
+y_train_eog = torch.FloatTensor(y_train_eog)  # [N, 1, 512]
+X_test_eog = torch.FloatTensor(X_test_eog)   # [11, M, 1, 512]
+y_test_eog = torch.FloatTensor(y_test_eog)   # [11, M, 1, 512]
 
-print("X_train_EMG:", X_train_EMG.shape)
-print("y_train_EMG:", y_train_EMG.shape)
-print("X_test_EMG: ", X_test_EMG.shape)
-print("y_test_EMG: ", y_test_EMG.shape)
+print("X_train_eog:", X_train_eog.shape)
+print("y_train_eog:", y_train_eog.shape)
+print("X_test_eog: ", X_test_eog.shape)
+print("y_test_eog: ", y_test_eog.shape)
 
 # Flatten test across SNR for aggregate metrics
-snr_levels, M, C, L = X_test_EMG.shape
-X_test_flat = X_test_EMG.reshape(snr_levels * M, C, L)
-y_test_flat = y_test_EMG.reshape(snr_levels * M, C, L)
+snr_levels, M, C, L = X_test_eog.shape
+X_test_flat = X_test_eog.reshape(snr_levels * M, C, L)
+y_test_flat = y_test_eog.reshape(snr_levels * M, C, L)
 
-train_ds = TensorDataset(X_train_EMG, y_train_EMG)
+train_ds = TensorDataset(X_train_eog, y_train_eog)
 test_ds = TensorDataset(X_test_flat, y_test_flat)
 
 # --------------------------
@@ -242,13 +242,13 @@ def evaluate(model, loader, device):
 
 
 @torch.no_grad()
-def evaluate_per_snr(model, X_test_EMG, y_test_EMG, batch_size=512):
+def evaluate_per_snr(model, X_test_eog, y_test_eog, batch_size=512):
     model.eval()
     results = []
-    snr_levels = X_test_EMG.shape[0]
+    snr_levels = X_test_eog.shape[0]
     for i in range(snr_levels):
-        X_i = X_test_EMG[i]  # [M,1,512]
-        y_i = y_test_EMG[i]
+        X_i = X_test_eog[i]  # [M,1,512]
+        y_i = y_test_eog[i]
         loader = DataLoader(TensorDataset(X_i, y_i),
                             batch_size=batch_size, shuffle=False)
         metrics = evaluate(model, loader, device)
@@ -265,7 +265,7 @@ def train_model(
     batch_size=256,
     lr=1e-3,
     weight_decay=1e-4,
-    model_save_path="./best_emg_denoiser.pt",
+    model_save_path="./best_eog_denoiser.pt",
     eval_per_snr=False
 ):
     train_loader = DataLoader(
@@ -320,7 +320,7 @@ def train_model(
         # (Optional) show per-SNR at the end of each epoch
         if eval_per_snr and (epoch % 5 == 0 or epoch == epochs):
             per_snr = evaluate_per_snr(
-                model, X_test_EMG.to(device), y_test_EMG.to(device))
+                model, X_test_eog.to(device), y_test_eog.to(device))
             print("Per-SNR metrics (SNR levels from -5 dB to 5 dB):")
             for i, m in enumerate(per_snr):
                 print(f"  SNR[{i:02d}] -> MSE: {m['MSE']:.6f}, RMSE: {m['RMSE']:.6f}, "
@@ -336,6 +336,6 @@ if __name__ == "__main__":
         batch_size=256,    # adjust to your GPU/CPU memory
         lr=1e-3,
         weight_decay=1e-4,
-        model_save_path="./best_emg_denoiser.pt",
+        model_save_path="./best_eog_denoiser.pt",
         eval_per_snr=False  # set True to view per-SNR metrics every 5 epochs
     )
