@@ -67,3 +67,5 @@ data/*
 
 outputs/*
 !outputs/.gitkeep
+eyem/
+musc/
