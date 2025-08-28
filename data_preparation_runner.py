@@ -38,7 +38,7 @@ def random_signal(signal, combin_num):
 
 def prepare_data(combin_num, train_per, noise_type):
 
-    file_location = './data/'  # change it to your own location #########
+    file_location = './data/'
     if noise_type == 'EOG':
         EEG_all = np.load(file_location + 'EEG_all_epochs.npy')
         noise_all = np.load(file_location + 'EOG_all_epochs.npy')
@@ -88,7 +88,6 @@ def prepare_data(combin_num, train_per, noise_type):
     all_sn_test = []
     all_eeg_test = []
 
-    # Adding noise to train
     SNR_train_dB = np.random.uniform(-5, 5, (EEG_train.shape[0]))
     print(SNR_train_dB.shape)
     SNR_train = np.sqrt(10 ** (0.1 * (SNR_train_dB)))
