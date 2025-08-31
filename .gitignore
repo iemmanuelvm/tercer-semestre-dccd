@@ -69,3 +69,5 @@ outputs/*
 !outputs/.gitkeep
 eyem/
 musc/
+semi-simulated-EEGEOG-dataset/
+A semi-simulated EEGEOG dataset for the comparison of EOG artifact rejection techniques.zip
