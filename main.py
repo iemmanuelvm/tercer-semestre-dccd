@@ -10,7 +10,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(42)
 np.random.seed(42)
 
-# ====== Preparación por artefacto (SIN ELPP) ======
 X_train_EMG,  y_train_EMG,  X_test_EMG,  y_test_EMG = prepare_data(
     combin_num=11, train_per=0.9, noise_type="EMG"
 )
@@ -24,7 +23,6 @@ X_train_SHIV, y_train_SHIV, X_test_SHIV, y_test_SHIV = prepare_data(
     combin_num=11, train_per=0.9, noise_type="SHIV"
 )
 
-# ====== A: a tensores ======
 X_train_EMG = to_tensor(X_train_EMG)
 y_train_EMG = to_tensor(y_train_EMG)
 X_test_EMG = to_tensor(X_test_EMG)
@@ -45,7 +43,6 @@ y_train_SHIV = to_tensor(y_train_SHIV)
 X_test_SHIV = to_tensor(X_test_SHIV)
 y_test_SHIV = to_tensor(y_test_SHIV)
 
-# ====== B: aserciones básicas ======
 for name, Xtr, ytr, Xte, yte in [
     ("EMG",  X_train_EMG,  y_train_EMG,  X_test_EMG,  y_test_EMG),
     ("EOG",  X_train_EOG,  y_train_EOG,  X_test_EOG,  y_test_EOG),
@@ -56,7 +53,6 @@ for name, Xtr, ytr, Xte, yte in [
     assert Xte.ndim == 4 and yte.ndim == 4, f"Test {name} must be [SNR,M,1,L]"
     assert Xtr.shape[1] == 1,               f"Channels for {name} must be 1"
 
-# Longitud ventana consistente en todos
 L = X_train_EMG.shape[-1]
 for t in [
     X_train_EOG, y_train_EMG, y_train_EOG,
@@ -86,8 +82,6 @@ print("y_train_SHIV:", _sh(y_train_SHIV))
 print("X_test_SHIV :", _sh(X_test_SHIV))
 print("y_test_SHIV :", _sh(y_test_SHIV))
 
-# ====== C: unión (train y test) SIN ELPP ======
-# Train conjunto
 X_train_joint = torch.cat(
     [X_train_EMG, X_train_EOG, X_train_CHEW, X_train_SHIV], dim=0
 )
@@ -95,7 +89,6 @@ y_train_joint = torch.cat(
     [y_train_EMG, y_train_EOG, y_train_CHEW, y_train_SHIV], dim=0
 )
 
-# Test conjunto (aplanamos SNR por artefacto)
 X_test_EMG_flat,  y_test_EMG_flat = flatten_snr(X_test_EMG,  y_test_EMG)
 X_test_EOG_flat,  y_test_EOG_flat = flatten_snr(X_test_EOG,  y_test_EOG)
 X_test_CHEW_flat, y_test_CHEW_flat = flatten_snr(X_test_CHEW, y_test_CHEW)
@@ -114,14 +107,12 @@ test_ds = TensorDataset(X_test_joint,  y_test_joint)
 print("[INFO] Joint train:", tuple(X_train_joint.shape),
       " | Joint test:", tuple(X_test_joint.shape))
 
-# ====== D: entrenamiento ======
 if __name__ == "__main__":
     _ = train_model(
         train_ds=train_ds,
         test_ds=test_ds,
         L=L,
         device=device,
-        # métricas por SNR (si activas) solo para EMG/EOG
         X_test_EMG=X_test_EMG,
         y_test_EMG=y_test_EMG,
         X_test_EOG=X_test_EOG,

@@ -1,4 +1,3 @@
-# infer_only.py  (OOM-safe, batched inference)
 import os
 import math
 import gc
@@ -8,20 +7,17 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 
-from utils.model import ResUNetTCN  # same model you trained
+from utils.model import ResUNetTCN
 
-# ============== config ==============
 MODEL_CKPT = "./best_joint_denoiser.pt"
 OUT_DIR = "./inferences"
-NOISES = ["EMG", "EOG", "CHEW", "SHIV"]   # omit ELPP as requested
+NOISES = ["EMG", "EOG", "CHEW", "SHIV"]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-USE_AUTOMIX = torch.cuda.is_available()       # autocast on CUDA
-DEFAULT_BS = 256                             # starting batch size
+USE_AUTOMIX = torch.cuda.is_available()
+DEFAULT_BS = 256
 torch.manual_seed(42)
 np.random.seed(42)
 os.makedirs(OUT_DIR, exist_ok=True)
-
-# ============== helpers ==============
 
 
 def load_model(ckpt_path: str, device: torch.device):
@@ -38,8 +34,7 @@ def load_model(ckpt_path: str, device: torch.device):
 
 
 def load_test_tensors(noise: str):
-    # keep on CPU; we’ll move batches to GPU just-in-time
-    X = np.load(f"./data/data_for_test/X_test_{noise}.npy")  # [SNR, M, 1, L]
+    X = np.load(f"./data/data_for_test/X_test_{noise}.npy")
     y = np.load(f"./data/data_for_test/y_test_{noise}.npy")
     X = torch.from_numpy(X).float()
     y = torch.from_numpy(y).float()
@@ -49,34 +44,28 @@ def load_test_tensors(noise: str):
 @torch.inference_mode()
 def infer_batched(
     model: nn.Module,
-    X_test: torch.Tensor,            # [SNR, M, 1, L] on CPU
+    X_test: torch.Tensor,
     device: torch.device,
     start_bs: int = DEFAULT_BS,
     use_autocast: bool = USE_AUTOMIX
 ) -> torch.Tensor:
-    """
-    Returns predictions with same shape as X_test, using adaptive batched inference.
-    """
     S, M, C, L = X_test.shape
     N = S * M
-    flat = X_test.reshape(N, C, L)   # still on CPU
+    flat = X_test.reshape(N, C, L)
 
-    # Try progressively smaller batch sizes on OOM
     bsz_candidates = [start_bs, 128, 64, 32, 16, 8, 4, 2, 1]
     out_cpu = []
     i = 0
 
-    # small helper for clearing cuda cache
     def _clear():
         if device.type == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
 
-    # pick first workable batch size
     for bsz in bsz_candidates:
         try:
             _clear()
-            out_cpu = []  # reset
+            out_cpu = []
             j = 0
             autocast_ctx = (
                 torch.autocast(device_type="cuda", dtype=torch.float16) if (use_autocast and device.type == "cuda")
@@ -84,17 +73,12 @@ def infer_batched(
             )
             with autocast_ctx:
                 while j < N:
-                    # to GPU
                     xb = flat[j:j+bsz].to(device, non_blocking=True)
-                    # [B, 1, L]
                     yb = model(xb)
-                    # back to CPU
                     out_cpu.append(yb.detach().cpu())
-                    # cleanup
                     del xb, yb
                     j += bsz
                     _clear()
-            # if we finished the loop, this bsz worked
             print(f"[INFO] Inference OK with batch_size={bsz}")
             break
         except RuntimeError as e:
@@ -105,24 +89,20 @@ def infer_batched(
             else:
                 raise
 
-    yhat = torch.cat(out_cpu, dim=0).reshape(S, M, C, L)  # on CPU
+    yhat = torch.cat(out_cpu, dim=0).reshape(S, M, C, L)
     return yhat
 
 
 def animate_across_snr(
     noise_name: str,
     model: nn.Module,
-    X_test: torch.Tensor,  # [SNR, M, 1, L] on CPU
-    y_test: torch.Tensor,  # [SNR, M, 1, L] on CPU
+    X_test: torch.Tensor,
+    y_test: torch.Tensor,
     sample_idx: int = 0,
     out_path: str | None = None,
     fps: int = 2,
     device: torch.device = DEVICE,
 ) -> str:
-    """
-    Single-chart animation. Each frame = different SNR for a fixed sample.
-    We move only the frame's window to GPU for the forward pass.
-    """
     model.eval()
     S, M, C, L = X_test.shape
     assert C == 1, "Expect 1 channel"
@@ -155,7 +135,7 @@ def animate_across_snr(
 
     @torch.inference_mode()
     def update(frame):
-        xb_cpu = X_test[frame, sample_idx].unsqueeze(0)    # [1, 1, L] on CPU
+        xb_cpu = X_test[frame, sample_idx].unsqueeze(0)
         yb_cpu = y_test[frame, sample_idx].unsqueeze(0)
         if device.type == "cuda":
             with torch.autocast(device_type="cuda", dtype=torch.float16):
@@ -177,7 +157,6 @@ def animate_across_snr(
     return out_path
 
 
-# ============== run ==============
 if __name__ == "__main__":
     model = load_model(MODEL_CKPT, DEVICE)
     print("[INFO] Model loaded from:", MODEL_CKPT)
@@ -192,17 +171,14 @@ if __name__ == "__main__":
         print(
             f"  X_test shape: {tuple(X_test.shape)} | y_test shape: {tuple(y_test.shape)}")
 
-        # Batched inference (CPU output)
         yhat_test = infer_batched(
             model, X_test, DEVICE, start_bs=DEFAULT_BS, use_autocast=USE_AUTOMIX)
 
-        # Save predictions (CPU tensors)
         pred_out = os.path.join(OUT_DIR, f"pred_{noise}.pt")
         torch.save({"yhat": yhat_test, "X_test": X_test,
                    "y_test": y_test}, pred_out)
         print(f"  Saved predictions -> {pred_out}")
 
-        # Animation for a representative sample (moves tiny tensors to GPU per frame)
         gif_path = animate_across_snr(
             noise_name=noise,
             model=model,
