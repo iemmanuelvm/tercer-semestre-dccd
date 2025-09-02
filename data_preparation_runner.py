@@ -45,6 +45,15 @@ def prepare_data(combin_num, train_per, noise_type):
     elif noise_type == 'EMG':
         EEG_all = np.load(file_location + 'EEG_all_epochs.npy')
         noise_all = np.load(file_location + 'EMG_all_epochs.npy')
+    elif noise_type == 'CHEW':
+        EEG_all = np.load(file_location + 'EEG_all_epochs.npy')
+        noise_all = np.load(file_location + 'CHEW_all_epochs.npy')
+    elif noise_type == 'ELPP':
+        EEG_all = np.load(file_location + 'EEG_all_epochs.npy')
+        noise_all = np.load(file_location + 'ELPP_all_epochs.npy')
+    elif noise_type == 'SHIV':
+        EEG_all = np.load(file_location + 'EEG_all_epochs.npy')
+        noise_all = np.load(file_location + 'SHIV_all_epochs.npy')
 
     EEG_all_random = np.squeeze(random_signal(signal=EEG_all, combin_num=1))
     noise_all_random = np.squeeze(
@@ -59,6 +68,16 @@ def prepare_data(combin_num, train_per, noise_type):
     elif noise_type == 'EOG':
         EEG_all_random = EEG_all_random[0:noise_all_random.shape[0]]
         print('EEG segments after drop: ', EEG_all_random.shape[0])
+
+    else:
+        if noise_all_random.shape[0] > EEG_all_random.shape[0]:
+            reuse_num = noise_all_random.shape[0] - EEG_all_random.shape[0]
+            EEG_reuse = EEG_all_random[0: reuse_num, :]
+            EEG_all_random = np.vstack([EEG_reuse, EEG_all_random])
+            print('EEG segments after reuse: ', EEG_all_random.shape[0])
+        else:
+            EEG_all_random = EEG_all_random[0:noise_all_random.shape[0]]
+            print('EEG segments after drop: ', EEG_all_random.shape[0])
 
     timepoint = noise_all_random.shape[1]
     train_num = round(train_per * EEG_all_random.shape[0])
