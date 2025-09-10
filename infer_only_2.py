@@ -97,29 +97,21 @@ def animate_across_snr_horizontal(
     noise_name: str,
     X_test: torch.Tensor,
     y_test: torch.Tensor,
-    yhat_pred: torch.Tensor | None = None,  # opcional: pasa yhat ya calculado
+    yhat_pred: torch.Tensor | None = None,
     sample_idx: int = 0,
     fps: int = 2,
     device: torch.device = DEVICE,
     show: bool = True,
 ) -> FuncAnimation:
-    """
-    Anima el recorrido de SNR de forma HORIZONTAL (paneo).
-    No guarda GIF: muestra una gráfica animada (plt.show()).
-    Si pasas yhat_pred, evita recomputar por frame.
-    """
-    # Shapes y datos base
     S, M, C, L = X_test.shape
     assert C == 1, "Esperaba 1 canal"
     t = np.arange(L)
-    gap = max(1, L // 20)              # pequeño espacio entre SNRs
-    chunk = L + gap                    # ancho de cada bloque SNR
+    gap = max(1, L // 20)
+    chunk = L + gap
 
-    # Extrae tensores (solo una muestra)
     noisy_np = X_test[:, sample_idx, 0, :].detach().cpu().numpy()
     clean_np = y_test[:, sample_idx, 0, :].detach().cpu().numpy()
 
-    # Predicho: usa cache si está disponible
     pred_np = None
     if yhat_pred is not None:
         _y = yhat_pred
@@ -127,21 +119,19 @@ def animate_across_snr_horizontal(
             _y = _y.detach().cpu().numpy()
         pred_np = _y[:, sample_idx, 0, :]
 
-    # Límites Y consistentes en todos los SNR
     ymin = float(min(noisy_np.min(), clean_np.min()))
     ymax = float(max(noisy_np.max(), clean_np.max()))
     pad = 0.05 * (ymax - ymin + 1e-6)
     ymin -= pad
     ymax += pad
 
-    # Figura
     fig, ax = plt.subplots()
     (ln_noisy,) = ax.plot([], [], label="noisy")
     (ln_pred,) = ax.plot([], [], label="denoised")
     (ln_clean,) = ax.plot([], [], label="clean")
     ax.legend(loc="upper right")
     ax.set_ylim(ymin, ymax)
-    ax.set_xlim(0, L)  # se irá desplazando
+    ax.set_xlim(0, L)
     ax.set_title(
         f"{noise_name} | sample {sample_idx} | across SNR (horizontal)")
     ax.set_xlabel("Tiempo (samples)")
@@ -155,12 +145,10 @@ def animate_across_snr_horizontal(
 
     @torch.inference_mode()
     def update(frame):
-        # offset horizontal para este SNR
         offset = frame * chunk
         xb_cpu = X_test[frame, sample_idx].unsqueeze(0)
         yb_cpu = y_test[frame, sample_idx].unsqueeze(0)
 
-        # predicción: de cache o on-the-fly
         if pred_np is None:
             if device.type == "cuda":
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
@@ -171,7 +159,6 @@ def animate_across_snr_horizontal(
         else:
             yhat = pred_np[frame]
 
-        # actualizar data desplazada en X
         x = t + offset
         ln_noisy.set_data(x, xb_cpu.squeeze(
             0).squeeze(0).detach().cpu().numpy())
@@ -179,7 +166,6 @@ def animate_across_snr_horizontal(
         ln_clean.set_data(x, yb_cpu.squeeze(
             0).squeeze(0).detach().cpu().numpy())
 
-        # paneo de la ventana para "pasar" horizontalmente
         ax.set_xlim(offset, offset + L - 1)
         ax.set_xlabel(f"Tiempo (samples) | SNR idx = {frame}/{S-1}")
         return ln_noisy, ln_pred, ln_clean
@@ -213,7 +199,6 @@ if __name__ == "__main__":
         print(
             f"  X_test shape: {tuple(X_test.shape)} | y_test shape: {tuple(y_test.shape)}")
 
-        # 1) Infer una sola vez (batched) y guarda/usa cache
         yhat_test = infer_batched(
             model, X_test, DEVICE, start_bs=DEFAULT_BS, use_autocast=USE_AUTOMIX
         )
@@ -222,16 +207,15 @@ if __name__ == "__main__":
                    "y_test": y_test}, pred_out)
         print(f"  Saved predictions -> {pred_out}")
 
-        # 2) Animación HORIZONTAL sin GIF (muestra ventana interactiva)
         _ = animate_across_snr_horizontal(
             noise_name=noise,
             X_test=X_test,
             y_test=y_test,
-            yhat_pred=yhat_test,   # <- usa cache para no recalcular
+            yhat_pred=yhat_test,
             sample_idx=0,
             fps=2,
             device=DEVICE,
-            show=True,             # muestra la gráfica animada
+            show=True,
         )
 
     print("\n[OK] Inference completed for all requested noise types.")

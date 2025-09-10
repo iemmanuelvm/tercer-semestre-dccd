@@ -1,18 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Inferir desde Contaminated_Data.mat (y opcionalmente Pure_Data.mat) con un
-modelo PyTorch (ResUNetTCN), reconstrucción por ventanas (OLA) CORREGIDA,
-gráficos (contaminado/denoised/limpio) y métricas CC, MSE, RMSE, RRMSE.
-
-Defaults: win=512, hop=512 (procesa de 512 en 512).
-Guarda CSV de métricas:
-  - metrics_per_channel_<base>_denoised.csv
-  - metrics_per_channel_<base>_baseline.csv
-  - metrics_summary_<base>.csv
-"""
-
 import os
 import gc
 import csv
@@ -27,11 +12,8 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 import torch
 import torch.nn as nn
 
-# ======== Modelo (asegúrate de tener este módulo en tu repo) ========
 from utils.model import ResUNetTCN
 
-
-# ---------------- MATLAB helpers ----------------
 
 def load_mat_as_dict(path):
     mat = loadmat(path, squeeze_me=True, struct_as_record=False)
@@ -69,9 +51,6 @@ def describe(name, x, max_vals=5):
 
 
 def ensure_2d_array(x, name):
-    """
-    Espera 2D (channels x samples). Si es struct, intenta campos comunes.
-    """
     x = unwrap_mat(x)
     if hasattr(x, "_fieldnames"):
         for k in ["EEG", "eeg", "data", "signal", "X"]:
@@ -88,14 +67,8 @@ def ensure_2d_array(x, name):
     return x
 
 
-# ---------------- Escalado ----------------
-
 def scale_pair(arr_con, arr_pure=None, kind="standard", per_channel=True,
                fit_on="both", feature_range=(-1, 1)):
-    """
-    Escala arr_con (y opcionalmente arr_pure) con los mismos parámetros.
-    Retorna: arr_con_s, arr_pure_s (o None), scalers (lista por canal o 1 global).
-    """
     if arr_con.ndim != 2:
         raise ValueError("arr_con debe ser 2D (channels x samples).")
     if arr_pure is not None and arr_pure.ndim != 2:
@@ -163,8 +136,6 @@ def scale_pair(arr_con, arr_pure=None, kind="standard", per_channel=True,
     return arr_con_s, arr_pure_s, scalers
 
 
-# ---------------- Modelo / carga ----------------
-
 def load_model(ckpt_path: str, device: torch.device) -> nn.Module:
     ckpt = torch.load(ckpt_path, map_location=device)
     cfg = ckpt.get("config", None)
@@ -178,46 +149,34 @@ def load_model(ckpt_path: str, device: torch.device) -> nn.Module:
     return model
 
 
-# ---------------- Inferencia OLA (CORREGIDA) ----------------
-
 @torch.inference_mode()
 def infer_ola_1d(
     model: nn.Module,
-    x_1d: np.ndarray,          # (T,)
+    x_1d: np.ndarray,
     device: torch.device,
     win: int = 512,
     hop: int = 512,
     batch_size: int = 256,
     use_autocast: bool = True,
-    window_input: bool = False,   # por defecto NO se ventana la ENTRADA
+    window_input: bool = False,
 ) -> np.ndarray:
-    """
-    Infiere sobre una señal 1D aplicando enventanado (win/hop) y OLA con Hann.
-    **Corrección clave**: normaliza por la SUMA de la ventana (no por w^2).
-    Devuelve yhat de longitud T (sin padding final).
-    """
     T = int(x_1d.shape[0])
     if T <= 0:
         return np.zeros_like(x_1d, dtype=np.float32)
 
-    # padding a la derecha para cubrir la última ventana
     n_frames = max(1, int(np.ceil((T - win) / hop)) + 1) if T > win else 1
     out_len = (n_frames - 1) * hop + win
     pad_len = max(0, out_len - T)
     x_pad = np.pad(x_1d, (0, pad_len), mode="reflect")
 
-    # sliding windows
     from numpy.lib.stride_tricks import sliding_window_view
-    frames = sliding_window_view(x_pad, win)[::hop]  # (n_frames, win)
+    frames = sliding_window_view(x_pad, win)[::hop]
     assert frames.shape[0] == n_frames
 
-    # ventana Hann
     w = np.hanning(win).astype(np.float32)
 
-    # ENTRADA: por defecto no se aplica ventana (window_input=False)
     frames_in = frames if not window_input else (frames * w[None, :])
 
-    # --- inferencia batcheada ---
     outs = []
     bsz_list = [batch_size, 128, 64, 32, 16, 8, 4, 2, 1]
 
@@ -238,7 +197,6 @@ def infer_ola_1d(
             with autocast_ctx:
                 while j < n_frames:
                     sl = slice(j, min(j + bsz, n_frames))
-                    # Copia contigua y writable para evitar UserWarning
                     xb_np = np.ascontiguousarray(
                         frames_in[sl], dtype=np.float32)
                     xb = torch.from_numpy(xb_np).unsqueeze(
@@ -256,40 +214,31 @@ def infer_ola_1d(
             else:
                 raise
 
-    y_frames = np.concatenate(outs, axis=0)  # (n_frames, win)
-
-    # --- OLA / reconstrucción (SÍNTESIS) ---
+    y_frames = np.concatenate(outs, axis=0)
     y_rec = np.zeros(out_len, dtype=np.float32)
     wsum = np.zeros(out_len, dtype=np.float32)
 
     for i in range(n_frames):
         start = i * hop
-        # multiplicamos la SALIDA por la ventana de síntesis
         y_rec[start:start+win] += y_frames[i] * w
-        # ¡normalizamos con la SUMA de w! (no w**2)
         wsum[start:start+win] += w
 
-    # evitar divisiones enormes en los bordes
     wsum[wsum < 1e-8] = 1.0
     y_rec /= wsum
 
-    # recorta a longitud original
     return y_rec[:T]
 
 
 @torch.inference_mode()
 def infer_eeg_matrix(
     model: nn.Module,
-    X_con_scaled: np.ndarray,    # (C, T) contaminado escalado
+    X_con_scaled: np.ndarray,
     device: torch.device,
     win: int, hop: int,
     batch_size: int,
     use_autocast: bool = True,
     window_input: bool = False,
 ) -> np.ndarray:
-    """
-    Infiere canal por canal con OLA. Devuelve (C, T).
-    """
     C, T = X_con_scaled.shape
     yhat = np.zeros_like(X_con_scaled, dtype=np.float32)
     for ch in range(C):
@@ -301,13 +250,7 @@ def infer_eeg_matrix(
     return yhat
 
 
-# ---------------- Métricas ----------------
-
 def compute_metrics_pair(y_true_2d: np.ndarray, y_pred_2d: np.ndarray, eps: float = 1e-12) -> Dict[str, np.ndarray]:
-    """
-    Métricas por canal entre señales 2D (C, T). Devuelve dict con arrays (C,).
-    CC: correlación de Pearson a lo largo de T por canal.
-    """
     assert y_true_2d.shape == y_pred_2d.shape
     y = y_true_2d
     p = y_pred_2d
@@ -335,9 +278,6 @@ def print_metrics_summary(title: str, met: Dict[str, np.ndarray]):
 
 
 def save_metrics_per_channel_csv(path: str, metrics: Dict[str, np.ndarray]):
-    """
-    Guarda CSV con columnas: ch, CC, MSE, RMSE, RRMSE (por canal).
-    """
     C = metrics["CC"].shape[0]
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
@@ -354,11 +294,6 @@ def save_metrics_per_channel_csv(path: str, metrics: Dict[str, np.ndarray]):
 
 
 def save_metrics_summary_csv(path: str, den: Dict[str, np.ndarray], base: Dict[str, np.ndarray]):
-    """
-    Guarda CSV resumen (una fila por conjunto): mean, std y mejora relativa básica.
-    Mejora (Δ) definida como denoised - baseline para CC (↑ mejor),
-    y baseline - denoised para MSE/RMSE/RRMSE (↓ mejor).
-    """
     def mstats(d: Dict[str, np.ndarray]):
         return {k: (float(v.mean()), float(v.std())) for k, v in d.items()}
 
@@ -387,8 +322,6 @@ def save_metrics_summary_csv(path: str, den: Dict[str, np.ndarray], base: Dict[s
     print(f"[INFO] Resumen de métricas -> {path}")
 
 
-# ---------------- Gráfica ----------------
-
 def plot_triplet(con: np.ndarray, den: np.ndarray, pure: Optional[np.ndarray],
                  ch: int, start: int, end: int, title: str, save_path: Optional[str],
                  auto_ylim: bool = False, ylim_pct: float = 99.5):
@@ -405,7 +338,6 @@ def plot_triplet(con: np.ndarray, den: np.ndarray, pure: Optional[np.ndarray],
     plt.plot(t, den[ch, start:end], label="denoised (inference)", alpha=0.9)
     if pure is not None:
         plt.plot(t, pure[ch, start:end], label="clean (target)", alpha=0.9)
-        # métricas del segmento
         seg_met = compute_metrics_pair(
             pure[ch:ch+1, start:end], den[ch:ch+1, start:end]
         )
@@ -433,8 +365,6 @@ def plot_triplet(con: np.ndarray, den: np.ndarray, pure: Optional[np.ndarray],
         plt.show()
 
 
-# ---------------- CLI ----------------
-
 def parse_range(s: str) -> Tuple[int, int]:
     try:
         a, b = s.split(":")
@@ -446,7 +376,6 @@ def parse_range(s: str) -> Tuple[int, int]:
 def build_argparser():
     ap = argparse.ArgumentParser(
         description="Inferir EEG desde .mat (cont/pure) con ResUNetTCN + OLA corregida + métricas + CSV.")
-    # defaults útiles
     ap.add_argument("--cont", default="Contaminated_Data.mat",
                     help="Ruta a Contaminated_Data.mat")
     ap.add_argument("--pure", default=None,
@@ -457,7 +386,6 @@ def build_argparser():
                     help="Clave contaminada (default: sim{ID}_con)")
     ap.add_argument("--pure-key", default=None,
                     help="Clave limpia (default: sim{ID}_resampled)")
-    # Modelo
     ap.add_argument("--ckpt", default="best_joint_denoiser.pt",
                     help="Checkpoint del modelo (.pt)")
     ap.add_argument("--cpu", action="store_true", help="Forzar CPU")
@@ -465,14 +393,12 @@ def build_argparser():
                     default=256, help="Batch inicial")
     ap.add_argument("--no-autocast", action="store_true",
                     help="Desactiva autocast FP16 en CUDA")
-    # Ventanas
     ap.add_argument("--win", type=int, default=512,
                     help="Tamaño de ventana del modelo")
     ap.add_argument("--hop", type=int, default=512,
                     help="Salto entre ventanas")
     ap.add_argument("--window-input", action="store_true",
                     help="Multiplicar también la ENTRADA por Hann (por defecto NO)")
-    # Escalado
     ap.add_argument(
         "--scaler", choices=["standard", "minmax", "robust"], default="standard")
     ap.add_argument(
@@ -489,7 +415,6 @@ def build_argparser():
                     help="Ajuste automático del eje Y (percentiles)")
     ap.add_argument("--ylim-pct", type=float, default=99.5,
                     help="Percentil superior para auto-ylim")
-    # Salidas
     ap.add_argument("--out-dir", default="./inferences",
                     help="Directorio de salida")
     ap.add_argument("--save-denoised-mat", action="store_true",
@@ -508,7 +433,6 @@ def main():
         f"[INFO] Device={device} | autocast(fp16)={'ON' if use_autocast else 'OFF'}")
     base = os.path.splitext(os.path.basename(args.cont))[0]
 
-    # --- Cargar .mat contaminado ---
     cont_dict = load_mat_as_dict(args.cont)
     cont_key = args.cont_key or f"sim{args.sim_id}_con"
     if cont_key not in cont_dict:
@@ -522,7 +446,6 @@ def main():
     describe(cont_key, sim_con)
     sim_con = ensure_2d_array(sim_con, cont_key)  # (C, T)
 
-    # --- (Opcional) Cargar .mat limpio ---
     sim_pure = None
     if args.pure:
         pure_dict = load_mat_as_dict(args.pure)
@@ -559,13 +482,11 @@ def main():
         feature_range=(args.minmax_min, args.minmax_max)
     )
 
-    # --- Cargar modelo ---
     print(f"\n[INFO] Cargando modelo desde: {args.ckpt}")
     model = load_model(args.ckpt, device)
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    # --- Inferencia canal por canal con OLA (CORREGIDA) ---
     print(
         f"\n[INFO] Inferencia OLA: win={args.win}, hop={args.hop}, batch={args.batch_size}, window_input={args.window_input}")
     yhat_s = infer_eeg_matrix(
@@ -579,18 +500,15 @@ def main():
         window_input=args.window_input,
     )  # (C, T)
 
-    # Guardar predicción escalada
     npy_path = os.path.join(args.out_dir, f"{base}_denoised_scaled.npy")
     np.save(npy_path, yhat_s)
     print(f"[INFO] Denoised (scaled) guardado -> {npy_path}")
 
-    # Opcional: guardar .mat
     if args.save_denoised_mat:
         mat_path = os.path.join(args.out_dir, f"{base}_denoised_scaled.mat")
         savemat(mat_path, {"denoised_scaled": yhat_s})
         print(f"[INFO] Denoised (scaled) guardado en .mat -> {mat_path}")
 
-    # --- Métricas (si hay clean) y guardado CSV ---
     if sim_pure_s is not None:
         den_metrics = compute_metrics_pair(
             sim_pure_s.astype(np.float32), yhat_s.astype(np.float32))
@@ -601,7 +519,6 @@ def main():
         print_metrics_summary(
             "Métricas (NOISY vs CLEAN) [baseline]", base_metrics)
 
-        # CSV por canal
         den_csv = os.path.join(
             args.out_dir, f"metrics_per_channel_{base}_denoised.csv")
         base_csv = os.path.join(
@@ -609,7 +526,6 @@ def main():
         save_metrics_per_channel_csv(den_csv, den_metrics)
         save_metrics_per_channel_csv(base_csv, base_metrics)
 
-        # CSV resumen
         sum_csv = os.path.join(args.out_dir, f"metrics_summary_{base}.csv")
         save_metrics_summary_csv(sum_csv, den_metrics, base_metrics)
 
@@ -617,7 +533,6 @@ def main():
         print(
             "\n[INFO] No se proporcionó 'Pure_Data.mat'. Se omiten métricas vs. limpio y CSVs.")
 
-    # --- Plot estático ---
     s_start, s_end = args.seg
     title = f"Denoising | ch {args.ch} | seg {s_start}:{s_end if s_end >= 0 else 'end'}"
     fig_path = os.path.join(args.out_dir, f"{base}_triplet.png")

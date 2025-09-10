@@ -492,7 +492,6 @@ def main():
             maybe_save_metrics_csv(noise + "_BASELINE",
                                    noisy_snr, noisy_overall, args.out_dir)
 
-        # ---- Animación opcional ----
         if args.animate:
             _ = animate_across_snr_horizontal(
                 noise_name=noise,
@@ -500,7 +499,7 @@ def main():
                 y_test=y_test,
                 model=model if yhat_test is None else None,
                 device=device,
-                yhat_pred=yhat_test,  # usa cache
+                yhat_pred=yhat_test,
                 sample_idx=max(0, min(args.sample_idx, M-1)),
                 fps=2,
                 show=True,

@@ -16,7 +16,6 @@ def plot_regression_metrics(
 
     df = pd.read_csv(csv_path)
 
-    # Limpiar encabezados y posibles espacios en números
     df.columns = df.columns.str.strip()
     df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce").astype("Int64")
 
@@ -65,7 +64,6 @@ def plot_regression_metrics(
 
     x = df["epoch"]
 
-    # MSE
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(x, df["train_mse"], label=t["legend"]["train"], **line_kw_train)
     ax.plot(x, df["test_mse"],  label=t["legend"]["test"],  **line_kw_test)
@@ -79,7 +77,6 @@ def plot_regression_metrics(
         fig.savefig(os.path.join(save_dir, "metric_mse.png"),
                     bbox_inches="tight", dpi=300)
 
-    # RMSE
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(x, df["train_rmse"], label=t["legend"]["train"], **line_kw_train)
     ax.plot(x, df["test_rmse"],  label=t["legend"]["test"],  **line_kw_test)
@@ -93,7 +90,6 @@ def plot_regression_metrics(
         fig.savefig(os.path.join(save_dir, "metric_rmse.png"),
                     bbox_inches="tight", dpi=300)
 
-    # RRMSE
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(x, df["train_rrmse"], label=t["legend"]["train"], **line_kw_train)
     ax.plot(x, df["test_rrmse"],  label=t["legend"]["test"],  **line_kw_test)
@@ -107,7 +103,6 @@ def plot_regression_metrics(
         fig.savefig(os.path.join(save_dir, "metric_rrmse.png"),
                     bbox_inches="tight", dpi=300)
 
-    # CC (solo CC, sin twinx)
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(x, df["train_cc"], label=t["legend"]["train"], **line_kw_train)
     ax.plot(x, df["test_cc"],  label=t["legend"]["test"],  **line_kw_test)
@@ -121,7 +116,6 @@ def plot_regression_metrics(
         fig.savefig(os.path.join(save_dir, "metric_cc.png"),
                     bbox_inches="tight", dpi=300)
 
-    # λ (OT) en gráfica aparte
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(x, df["ot_lambda_alpha"], label=t["legend"]
             ["lambda"], **line_kw_lambda)

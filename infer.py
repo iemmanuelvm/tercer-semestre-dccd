@@ -1,24 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Inferencia sobre señales 1D concatenadas (noisy/pure) con ResUNetTCN.
-
-Lee dos archivos .npy 1D (salida_con_1d.npy y salida_pure_1d.npy),
-segmenta en ventanas, ejecuta el modelo por lotes y reconstruye por
-Overlap-Add (OLA). Guarda la señal denoised como .npy y métricas.
-
-Ejemplos:
----------
-python3 infer_1d_eegeog.py \
-  --noisy-path semi-simulated-EEGEOG-dataset/salida_con_1d.npy \
-  --clean-path semi-simulated-EEGEOG-dataset/salida_pure_1d.npy \
-  --ckpt best_joint_denoiser.pt \
-  --win-len 2048 --overlap 0.5 \
-  --out-dir inferences
-
-Requisitos: numpy, torch, matplotlib, utils.model.ResUNetTCN (tu repo).
-"""
-
 import os
 import gc
 import math
@@ -30,10 +9,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from typing import Tuple
 
-# Importa tu modelo
 from utils.model import ResUNetTCN
-
-# -------------------- Utils --------------------
 
 
 def set_seed(seed: int = 42):
@@ -51,13 +27,10 @@ def human_size(n: int) -> str:
     return f"{s:.1f}TB"
 
 
-# -------------------- Modelo --------------------
-
 def load_model(ckpt_path: str, device: torch.device) -> nn.Module:
     ckpt = torch.load(ckpt_path, map_location=device)
     cfg = ckpt.get("config", None)
     if cfg is None:
-        # Parámetros por defecto si el checkpoint no trae config
         model = ResUNetTCN(in_ch=1, base=64, depth=3, k=7,
                            dropout=0.05, heads=4).to(device)
     else:
@@ -67,20 +40,14 @@ def load_model(ckpt_path: str, device: torch.device) -> nn.Module:
     return model
 
 
-# -------------------- Ventaneo & OLA --------------------
-
 def compute_hop_len(win_len: int, overlap: float) -> int:
     overlap = float(overlap)
-    overlap = max(0.0, min(0.95, overlap))  # no más de 95% para estabilidad
+    overlap = max(0.0, min(0.95, overlap))
     hop = int(round(win_len * (1.0 - overlap)))
     return max(1, hop)
 
 
 def frame_signal(x: np.ndarray, win_len: int, hop_len: int) -> Tuple[np.ndarray, int]:
-    """
-    Devuelve ventanas (N, win_len) y la longitud acolchada usada.
-    Se rellena la cola con ceros para cubrir la señal completa.
-    """
     L = int(x.shape[0])
     if L <= 0:
         raise ValueError("La señal de entrada está vacía")
@@ -92,13 +59,11 @@ def frame_signal(x: np.ndarray, win_len: int, hop_len: int) -> Tuple[np.ndarray,
         x_pad = np.pad(x, (0, pad_len), mode="constant")
         return x_pad[None, :], x_pad.shape[0]
 
-    # número de frames asegurando cubrir el final con padding si hace falta
     n_frames = 1 + math.ceil((L - win_len) / hop_len)
     pad_needed = max(0, (n_frames - 1) * hop_len + win_len - L)
     x_pad = np.pad(x, (0, pad_needed), mode="constant")
     Lpad = x_pad.shape[0]
 
-    # construir ventanas
     frames = []
     start = 0
     for _ in range(n_frames):
@@ -109,7 +74,6 @@ def frame_signal(x: np.ndarray, win_len: int, hop_len: int) -> Tuple[np.ndarray,
 
 
 def ola_reconstruct(frames: np.ndarray, L_out: int, hop_len: int) -> np.ndarray:
-    """Reconstrucción por Overlap-Add (ventana rectangular)."""
     n_frames, win_len = frames.shape
     out = np.zeros((L_out,), dtype=frames.dtype)
     wsum = np.zeros((L_out,), dtype=frames.dtype)
@@ -124,18 +88,12 @@ def ola_reconstruct(frames: np.ndarray, L_out: int, hop_len: int) -> np.ndarray:
     return out
 
 
-# -------------------- Inferencia batched --------------------
-
 @torch.inference_mode()
 def infer_windows_batched(model: nn.Module,
                           windows: np.ndarray,
                           device: torch.device,
                           start_bs: int = 256,
                           use_autocast: bool = True) -> np.ndarray:
-    """
-    windows: (N, L) en float32/float64
-    Retorna: (N, L) en float32
-    """
     N, L = windows.shape
     bsz_candidates = [start_bs, 128, 64, 32, 16, 8, 4, 2, 1]
     out_chunks = []
@@ -163,10 +121,10 @@ def infer_windows_batched(model: nn.Module,
             with ctx:
                 while j < N:
                     xb = windows[j:j+bsz]
-                    xb = torch.from_numpy(xb).float()  # (B, L)
-                    xb = xb.unsqueeze(1)               # (B, 1, L)
+                    xb = torch.from_numpy(xb).float()
+                    xb = xb.unsqueeze(1)
                     xb = xb.to(device, non_blocking=True)
-                    yb = model(xb)                     # (B, 1, L)
+                    yb = model(xb)
                     yb = yb.detach().float().cpu().squeeze(1).numpy()
                     out_chunks.append(yb)
                     del xb
@@ -185,10 +143,7 @@ def infer_windows_batched(model: nn.Module,
     return yhat
 
 
-# -------------------- Métricas --------------------
-
 def snr_db(ref: np.ndarray, est: np.ndarray) -> float:
-    """SNR(ref, est) = 10 log10( ||ref||^2 / ||ref - est||^2 )."""
     num = float(np.sum(ref ** 2)) + 1e-12
     den = float(np.sum((ref - est) ** 2)) + 1e-12
     return 10.0 * math.log10(num / den)
@@ -204,8 +159,6 @@ def corrcoef(ref: np.ndarray, est: np.ndarray) -> float:
         return 0.0
     return float(r)
 
-
-# -------------------- CLI & main --------------------
 
 def parse_range(s: str) -> Tuple[int, int]:
     a, b = s.split(":")
@@ -246,7 +199,6 @@ def main():
     parser.add_argument("--limit-previews", type=int, default=None,
                         help="Máximo de previews a generar (para acelerar pruebas)")
 
-    # (opcional) previsualizar un único segmento concreto
     parser.add_argument("--plot-seg", type=parse_range, default=None,
                         help="Segmento único START:END para graficar además de los previews por chunks")
 
@@ -259,11 +211,9 @@ def main():
 
     set_seed(42)
 
-    # --- Carga modelo ---
     model = load_model(args.ckpt, device)
     print(f"[INFO] Modelo cargado de: {args.ckpt}")
 
-    # --- Carga señales 1D ---
     noisy = np.load(args.noisy_path)
     clean = np.load(args.clean_path)
     if noisy.ndim != 1:
@@ -277,21 +227,17 @@ def main():
     print(
         f"[INFO] Señal cargada | long = {L:,} muestras | noisy: {human_size(noisy.nbytes)} | clean: {human_size(clean.nbytes)}")
 
-    # --- Ventaneo ---
     hop = compute_hop_len(args.win_len, args.overlap)
     X_win, Lpad = frame_signal(noisy, args.win_len, hop)
     Y_win, _ = frame_signal(clean, args.win_len, hop)
     print(
         f"[INFO] Ventanas -> N={X_win.shape[0]} | win_len={args.win_len} | hop={hop} | Lpad={Lpad}")
 
-    # --- Inferencia por lotes ---
     yhat_win = infer_windows_batched(model, X_win, device,
                                      start_bs=args.batch, use_autocast=use_autocast)
 
-    # --- Reconstrucción OLA ---
     denoised = ola_reconstruct(yhat_win, Lpad, hop)[:L].astype(np.float32)
 
-    # --- Métricas ---
     snr_in = snr_db(clean, noisy)
     snr_out = snr_db(clean, denoised)
     imp = snr_out - snr_in
@@ -314,13 +260,11 @@ def main():
         "L_signal": int(L),
     }
 
-    # --- Guardado ---
     den_path = os.path.join(args.out_dir, "denoised_1d.npy")
     np.save(den_path, denoised)
     with open(os.path.join(args.out_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    # -------------------- Previews por CHUNKS --------------------
     pw = max(1, int(args.preview_win))
     ph = max(1, int(args.preview_hop))
     n_gen = 0
@@ -346,7 +290,6 @@ def main():
         if args.limit_previews is not None and n_gen >= int(args.limit_previews):
             break
 
-    # (opcional) Preview único adicional si el usuario lo pide con --plot-seg
     if args.plot_seg is not None:
         s, e = args.plot_seg
         s = max(0, min(s, L-1))

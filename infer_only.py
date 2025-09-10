@@ -166,7 +166,7 @@ if __name__ == "__main__":
 
     for noise in NOISES:
         print(f"\n[INFO] Inference on TEST ONLY — {noise}")
-        X_test, y_test = load_test_tensors(noise)  # kept on CPU
+        X_test, y_test = load_test_tensors(noise)
         S, M, C, L = X_test.shape
         print(
             f"  X_test shape: {tuple(X_test.shape)} | y_test shape: {tuple(y_test.shape)}")
