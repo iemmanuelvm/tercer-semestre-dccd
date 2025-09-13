@@ -200,9 +200,9 @@ def infer_ola_1d(
                     xb_np = np.ascontiguousarray(
                         frames_in[sl], dtype=np.float32)
                     xb = torch.from_numpy(xb_np).unsqueeze(
-                        1).to(device)  # (B,1,win)
+                        1).to(device)
                     yb = model(xb).detach().cpu().squeeze(
-                        1).numpy()      # (B,win)
+                        1).numpy()
                     outs.append(yb)
                     j = sl.stop
                     _clear()
@@ -444,7 +444,7 @@ def main():
     sim_con = to_py(sim_con_raw)
     print("\n=== Después de conversión ===")
     describe(cont_key, sim_con)
-    sim_con = ensure_2d_array(sim_con, cont_key)  # (C, T)
+    sim_con = ensure_2d_array(sim_con, cont_key)
 
     sim_pure = None
     if args.pure:
@@ -470,7 +470,6 @@ def main():
             sim_con = sim_con[:, :T]
             sim_pure = sim_pure[:, :T]
 
-    # --- Escalado coherente ---
     print("\n=== Config de escalado ===")
     print(f"scaler={args.scaler}, fit_on={args.fit_on}, per_channel={not args.global_scaling}, "
           f"feature_range=({args.minmax_min},{args.minmax_max})")
