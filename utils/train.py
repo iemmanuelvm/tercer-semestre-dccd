@@ -1,3 +1,5 @@
+import os
+import csv
 import math
 import torch
 import torch.nn as nn
@@ -12,6 +14,76 @@ try:
 except ImportError as e:
     raise ImportError(
         "GeomLoss is not installed. Install with: pip install geomloss") from e
+
+
+def kl_divergence(p, q, eps: float = 1e-6):
+    p = torch.clamp(p, min=eps)
+    q = torch.clamp(q, min=eps)
+    return torch.sum(p * torch.log(p / q), dim=-1)
+
+
+def jensen_shannon_divergence(p, q, eps: float = 1e-6):
+    m = 0.5 * (p + q)
+    jsd = 0.5 * kl_divergence(p, m, eps) + 0.5 * kl_divergence(q, m, eps)
+    return jsd
+
+
+def jensen_shannon_distance(p, q, eps: float = 1e-6):
+    jsd = jensen_shannon_divergence(p, q, eps)
+    jsd = torch.clamp(jsd, min=0.0)
+    return torch.sqrt(jsd)
+
+
+def _maybe_init_csv(path: str, fieldnames: list[str]):
+    if not os.path.exists(path):
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+
+def _append_row(path: str, row: dict, fieldnames: list[str]):
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(row)
+
+
+def _to_probs(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
+    min_vals = torch.amax(-x, dim=dim, keepdim=True)
+    min_vals = torch.clamp(min_vals, min=0.0)
+    x_shift = x + min_vals + eps
+    denom = torch.sum(x_shift, dim=dim, keepdim=True) + eps
+    return x_shift / denom
+
+
+@torch.no_grad()
+def _compute_js_kl_over_loader(model, loader, device, use_softmax: bool = False):
+    model.eval()
+    kl_vals, jsd_vals, jsdist_vals = [], [], []
+    for xb, yb in loader:
+        xb = xb.to(device)
+        yb = yb.to(device)
+        yhat = model(xb)
+
+        if use_softmax:
+            p = torch.softmax(yhat, dim=-1)
+            q = torch.softmax(yb, dim=-1)
+        else:
+            p = _to_probs(yhat, dim=-1)
+            q = _to_probs(yb,   dim=-1)
+
+        kl_batch = kl_divergence(p, q).mean().item()
+        jsd_batch = jensen_shannon_divergence(p, q).mean().item()
+        jsdist_batch = jensen_shannon_distance(p, q).mean().item()
+
+        kl_vals.append(kl_batch)
+        jsd_vals.append(jsd_batch)
+        jsdist_vals.append(jsdist_batch)
+
+    return {
+        "KL": float(sum(kl_vals) / max(1, len(kl_vals))),
+        "JSD": float(sum(jsd_vals) / max(1, len(jsd_vals))),
+        "JSDist": float(sum(jsdist_vals) / max(1, len(jsdist_vals))),
+    }
 
 
 def train_model(
@@ -35,7 +107,9 @@ def train_model(
     ot_weight=0.1,
     ramp_epochs=20,
     ot_blur=0.05,
-    feature_l2norm=True
+    feature_l2norm=True,
+    metrics_csv_path="trainig_metrics.csv",
+    js_use_softmax=False
 ):
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, drop_last=False,
@@ -71,6 +145,16 @@ def train_model(
     samples_loss = SamplesLoss(
         loss=ot_kind, p=2, blur=ot_blur, debias=True if ot_kind == "sinkhorn" else False
     )
+
+    fieldnames = [
+        "epoch", "lr",
+        "train_MSE", "train_RMSE", "train_RRMSE", "train_CC",
+        "test_MSE",  "test_RMSE",  "test_RRMSE",  "test_CC",
+        "train_KL", "train_JSD", "train_JSDist",
+        "test_KL",  "test_JSD",  "test_JSDist",
+        "ot_lambda_alpha"
+    ]
+    _maybe_init_csv(metrics_csv_path, fieldnames)
 
     best_val = math.inf
     print("\n[INFO] Start joint training (EMG+EOG) with OT adaptation =",
@@ -116,17 +200,47 @@ def train_model(
         scheduler.step()
 
         train_metrics = evaluate(model, train_loader, device)
-        test_metrics = evaluate(model, test_loader, device)
+        test_metrics = evaluate(model, test_loader,  device)
+
+        train_js = _compute_js_kl_over_loader(
+            model, train_loader, device, use_softmax=js_use_softmax)
+        test_js = _compute_js_kl_over_loader(
+            model, test_loader,  device, use_softmax=js_use_softmax)
+
         msg = (
             f"Epoch {epoch:03d} | "
             f"Train -> MSE {train_metrics['MSE']:.6f}, RMSE {train_metrics['RMSE']:.6f}, "
             f"RRMSE {train_metrics['RRMSE']:.6f}, CC {train_metrics['CC']:.4f} | "
             f"Test -> MSE {test_metrics['MSE']:.6f}, RMSE {test_metrics['RMSE']:.6f}, "
-            f"RRMSE {test_metrics['RRMSE']:.6f}, CC {test_metrics['CC']:.4f}"
+            f"RRMSE {test_metrics['RRMSE']:.6f}, CC {test_metrics['CC']:.4f} | "
+            f"KL/JSD/JSDist (train) {train_js['KL']:.4f}/{train_js['JSD']:.4f}/{train_js['JSDist']:.4f} | "
+            f"(test) {test_js['KL']:.4f}/{test_js['JSD']:.4f}/{test_js['JSDist']:.4f}"
         )
         if domain_adapt:
             msg += f" | OT λ*α={lam*ot_weight:.3f}"
         print(msg)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        row = {
+            "epoch": epoch,
+            "lr": current_lr,
+            "train_MSE": train_metrics["MSE"],
+            "train_RMSE": train_metrics["RMSE"],
+            "train_RRMSE": train_metrics["RRMSE"],
+            "train_CC": train_metrics["CC"],
+            "test_MSE": test_metrics["MSE"],
+            "test_RMSE": test_metrics["RMSE"],
+            "test_RRMSE": test_metrics["RRMSE"],
+            "test_CC": test_metrics["CC"],
+            "train_KL": train_js["KL"],
+            "train_JSD": train_js["JSD"],
+            "train_JSDist": train_js["JSDist"],
+            "test_KL": test_js["KL"],
+            "test_JSD": test_js["JSD"],
+            "test_JSDist": test_js["JSDist"],
+            "ot_lambda_alpha": (lam * ot_weight) if domain_adapt else 0.0,
+        }
+        _append_row(metrics_csv_path, row, fieldnames)
 
         if test_metrics["MSE"] < best_val:
             best_val = test_metrics["MSE"]
