@@ -16,7 +16,17 @@ def plot_regression_metrics(
 
     df = pd.read_csv(csv_path)
 
-    df.columns = df.columns.str.strip()
+    df.columns = (
+        df.columns.str.strip()
+        .str.replace(r"[^A-Za-z0-9]+", "_", regex=True)
+        .str.lower()
+    )
+
+    if "epoch" not in df.columns:
+        raise KeyError(
+            "Falta la columna 'epoch' (después de normalización). "
+            f"Columnas encontradas: {list(df.columns)}"
+        )
     df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce").astype("Int64")
 
     num_cols = [
@@ -64,77 +74,59 @@ def plot_regression_metrics(
 
     x = df["epoch"]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x, df["train_mse"], label=t["legend"]["train"], **line_kw_train)
-    ax.plot(x, df["test_mse"],  label=t["legend"]["test"],  **line_kw_test)
-    ax.set_title(f'{t["title"]} — MSE\n', fontsize=18, fontweight="bold")
-    ax.set_xlabel(t["x"], fontsize=18, fontweight="bold")
-    ax.set_ylabel(t["y"]["mse"], fontsize=18, fontweight="bold")
-    ax.tick_params(axis="both", labelsize=14)
-    ax.legend(loc="best", fontsize=14, frameon=True, fancybox=True)
-    ax.grid(True)
-    if save_dir:
-        fig.savefig(os.path.join(save_dir, "metric_mse.png"),
-                    bbox_inches="tight", dpi=300)
+    def plot_pair(y_train: str, y_test: str, title_suffix: str, y_label: str, fname: str):
+        if y_train in df.columns and y_test in df.columns:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(x, df[y_train], label=t["legend"]
+                    ["train"], **line_kw_train)
+            ax.plot(x, df[y_test],  label=t["legend"]["test"],  **line_kw_test)
+            ax.set_title(f'{t["title"]} — {title_suffix}\n',
+                         fontsize=24, fontweight="bold")
+            ax.set_xlabel(t["x"], fontsize=24, fontweight="bold")
+            ax.set_ylabel(y_label, fontsize=24, fontweight="bold")
+            ax.tick_params(axis="both", labelsize=24)
+            ax.legend(loc="best", fontsize=24, frameon=True, fancybox=True)
+            ax.grid(True)
+            if save_dir:
+                fig.savefig(os.path.join(save_dir, fname),
+                            bbox_inches="tight", dpi=300)
+        else:
+            missing = [c for c in (y_train, y_test) if c not in df.columns]
+            print(
+                f"[AVISO] No se graficó {title_suffix}: faltan columnas {missing}")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x, df["train_rmse"], label=t["legend"]["train"], **line_kw_train)
-    ax.plot(x, df["test_rmse"],  label=t["legend"]["test"],  **line_kw_test)
-    ax.set_title(f'{t["title"]} — RMSE\n', fontsize=18, fontweight="bold")
-    ax.set_xlabel(t["x"], fontsize=18, fontweight="bold")
-    ax.set_ylabel(t["y"]["rmse"], fontsize=18, fontweight="bold")
-    ax.tick_params(axis="both", labelsize=14)
-    ax.legend(loc="best", fontsize=14, frameon=True, fancybox=True)
-    ax.grid(True)
-    if save_dir:
-        fig.savefig(os.path.join(save_dir, "metric_rmse.png"),
-                    bbox_inches="tight", dpi=300)
+    plot_pair("train_mse", "test_mse", "MSE", t["y"]["mse"], "metric_mse.png")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x, df["train_rrmse"], label=t["legend"]["train"], **line_kw_train)
-    ax.plot(x, df["test_rrmse"],  label=t["legend"]["test"],  **line_kw_test)
-    ax.set_title(f'{t["title"]} — RRMSE\n', fontsize=18, fontweight="bold")
-    ax.set_xlabel(t["x"], fontsize=18, fontweight="bold")
-    ax.set_ylabel(t["y"]["rrmse"], fontsize=18, fontweight="bold")
-    ax.tick_params(axis="both", labelsize=14)
-    ax.legend(loc="best", fontsize=14, frameon=True, fancybox=True)
-    ax.grid(True)
-    if save_dir:
-        fig.savefig(os.path.join(save_dir, "metric_rrmse.png"),
-                    bbox_inches="tight", dpi=300)
+    plot_pair("train_rmse", "test_rmse", "RMSE",
+              t["y"]["rmse"], "metric_rmse.png")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x, df["train_cc"], label=t["legend"]["train"], **line_kw_train)
-    ax.plot(x, df["test_cc"],  label=t["legend"]["test"],  **line_kw_test)
-    ax.set_title(f'{t["title"]} — CC\n', fontsize=18, fontweight="bold")
-    ax.set_xlabel(t["x"], fontsize=18, fontweight="bold")
-    ax.set_ylabel(t["y"]["cc"], fontsize=18, fontweight="bold")
-    ax.tick_params(axis="both", labelsize=14)
-    ax.legend(loc="best", fontsize=14, frameon=True, fancybox=True)
-    ax.grid(True)
-    if save_dir:
-        fig.savefig(os.path.join(save_dir, "metric_cc.png"),
-                    bbox_inches="tight", dpi=300)
+    plot_pair("train_rrmse", "test_rrmse", "RRMSE",
+              t["y"]["rrmse"], "metric_rrmse.png")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x, df["ot_lambda_alpha"], label=t["legend"]
-            ["lambda"], **line_kw_lambda)
-    ax.set_title("λ (OT)\n", fontsize=18, fontweight="bold")
-    ax.set_xlabel(t["x"], fontsize=18, fontweight="bold")
-    ax.set_ylabel(t["y"]["lambda"], fontsize=18, fontweight="bold")
-    ax.tick_params(axis="both", labelsize=14)
-    ax.legend(loc="best", fontsize=14, frameon=True, fancybox=True)
-    ax.grid(True)
-    if save_dir:
-        fig.savefig(os.path.join(save_dir, "metric_lambda.png"),
-                    bbox_inches="tight", dpi=300)
+    plot_pair("train_cc", "test_cc", "CC", t["y"]["cc"], "metric_cc.png")
+
+    if "ot_lambda_alpha" in df.columns:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(x, df["ot_lambda_alpha"], label=t["legend"]
+                ["lambda"], **line_kw_lambda)
+        ax.set_title("λ (OT)\n", fontsize=24, fontweight="bold")
+        ax.set_xlabel(t["x"], fontsize=24, fontweight="bold")
+        ax.set_ylabel(t["y"]["lambda"], fontsize=24, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=24)
+        ax.legend(loc="best", fontsize=24, frameon=True, fancybox=True)
+        ax.grid(True)
+        if save_dir:
+            fig.savefig(os.path.join(save_dir, "metric_lambda.png"),
+                        bbox_inches="tight", dpi=300)
+    else:
+        print("[AVISO] No se graficó λ (OT): falta la columna 'ot_lambda_alpha'.")
 
     plt.show()
 
 
 if __name__ == "__main__":
     plot_regression_metrics(
-        "training_metrics.csv",
+        "trainig_metrics.csv",
         language="es",
         save_dir="plots",
     )

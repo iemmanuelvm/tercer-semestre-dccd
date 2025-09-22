@@ -69,6 +69,7 @@ def infer_batched(model: nn.Module, X_test: torch.Tensor, device: torch.device, 
         if device.type == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
+
     for bsz in bsz_candidates:
         try:
             _clear()
@@ -161,6 +162,49 @@ def maybe_save_metrics_csv(noise_name: str, per_snr: Dict[str, Tuple[np.ndarray,
     print(f"[INFO] Metrics CSV saved -> {csv_path}")
 
 
+def _labels(lang: str) -> Dict[str, str]:
+    if lang.lower().startswith("es"):
+        return {
+            "clean": "EEG limpio",
+            "noisy": "EEG ruidoso",
+            "denoised": "EEG desenruido",
+            "time_s": "Tiempo (s)",
+            "time_samples": "Tiempo (muestras)",
+            "amplitude": "Amplitud",
+            "snr_idx": "índice SNR",
+            "sample": "muestra",
+            "channel": "canal",
+            "across_snr": "a través de SNR (horizontal)",
+            "train": "Exactitud de Entrenamiento (Fuente)",
+            "train_t": "Exactitud de Entrenamiento (Objetivo)",
+            "val": "Exactitud de Validación (Fuente)",
+            "val_t": "Exactitud de Validación (Objetivo)",
+            "title_acc": "Exactitud de Entrenamiento y Validación",
+            "epochs": "Épocas",
+            "accuracy": "Exactitud",
+        }
+    else:
+        return {
+            "clean": "Clean EEG",
+            "noisy": "Noisy EEG",
+            "denoised": "Denoised EEG",
+            "time_s": "Time (s)",
+            "time_samples": "Time (samples)",
+            "amplitude": "Amplitude",
+            "snr_idx": "SNR idx",
+            "sample": "sample",
+            "channel": "ch",
+            "across_snr": "across SNR (horizontal)",
+            "train": "Training Accuracy (Source)",
+            "train_t": "Training Accuracy (Target)",
+            "val": "Validation Accuracy (Source)",
+            "val_t": "Validation Accuracy (Target)",
+            "title_acc": "Training and Validation Accuracy",
+            "epochs": "Epochs",
+            "accuracy": "Accuracy",
+        }
+
+
 def plot_eeg_separate(
     X_test: torch.Tensor,
     y_test: torch.Tensor,
@@ -175,7 +219,9 @@ def plot_eeg_separate(
     show: bool = False,
     sr: int = DEFAULT_SR,
     snr_db: Optional[float] = None,
+    language: str = "en",
 ):
+    labels = _labels(language)
     x_np = X_test[snr_idx, sample_idx, ch].detach().cpu().numpy()
     y_np = y_test[snr_idx, sample_idx, ch].detach().cpu().numpy()
     p_np = yhat[snr_idx, sample_idx, ch].detach().cpu().numpy()
@@ -192,17 +238,17 @@ def plot_eeg_separate(
     fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
     axes[0].plot(t, y_np[seg], color="#1f77b4", linewidth=1.2)
     axes[0].set_title(
-        f"{title_prefix} Clean EEG | SNR[{snr_idx}] ({snr_db:+.0f} dB) sample[{sample_idx}] ch[{ch}]", fontsize=14, fontweight="bold")
-    axes[0].set_ylabel("Amplitude", fontsize=12)
+        f"{title_prefix} {labels['clean']} | SNR[{snr_idx}] ({snr_db:+.0f} dB) {labels['sample']}[{sample_idx}] {labels['channel']}[{ch}]", fontsize=24, fontweight="bold")
+    axes[0].set_ylabel(labels["amplitude"], fontsize=24)
     axes[1].plot(t, x_np[seg], color="#d62728", linewidth=1.2)
     axes[1].set_title(
-        f"{title_prefix} Noisy EEG (SNR idx={snr_idx}, {snr_db:+.0f} dB)", fontsize=14, fontweight="bold")
-    axes[1].set_ylabel("Amplitude", fontsize=12)
+        f"{title_prefix} {labels['noisy']} ({labels['snr_idx']}={snr_idx}, {snr_db:+.0f} dB)", fontsize=24, fontweight="bold")
+    axes[1].set_ylabel(labels["amplitude"], fontsize=24)
     axes[2].plot(t, p_np[seg], color="#2ca02c", linewidth=1.2)
     axes[2].set_title(
-        f"{title_prefix} Denoised EEG | CC={cc:.3f}, RMSE={rmse:.3f}, RRMSE={rrmse:.3f}", fontsize=14, fontweight="bold")
-    axes[2].set_xlabel("Time (s)", fontsize=12)
-    axes[2].set_ylabel("Amplitude", fontsize=12)
+        f"{title_prefix} {labels['denoised']} | CC={cc:.3f}, RMSE={rmse:.3f}, RRMSE={rrmse:.3f}", fontsize=24, fontweight="bold")
+    axes[2].set_xlabel(labels["time_s"], fontsize=24)
+    axes[2].set_ylabel(labels["amplitude"], fontsize=24)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -222,7 +268,9 @@ def animate_across_snr_horizontal(
     sample_idx: int = 0,
     fps: int = 2,
     show: bool = True,
+    language: str = "en",
 ) -> FuncAnimation:
+    labels = _labels(language)
     S, M, C, L = X_test.shape
     assert C == 1, "Expected 1 channel"
     device = device or torch.device(
@@ -244,16 +292,17 @@ def animate_across_snr_horizontal(
     ymin -= pad
     ymax += pad
     fig, ax = plt.subplots()
-    (ln_noisy,) = ax.plot([], [], label="noisy", color="#d62728", linewidth=1.1)
-    (ln_pred,) = ax.plot([], [], label="denoised", color="#2ca02c", linewidth=1.1)
-    (ln_clean,) = ax.plot([], [], label="clean", color="#1f77b4", linewidth=1.1)
+    (ln_noisy,) = ax.plot([], [], label=labels["noisy"], color="#d62728", linewidth=1.1)
+    (ln_pred,) = ax.plot([], [], label=labels["denoised"],
+                         color="#2ca02c", linewidth=1.1)
+    (ln_clean,) = ax.plot([], [], label=labels["clean"], color="#1f77b4", linewidth=1.1)
     ax.legend(loc="upper right")
     ax.set_ylim(ymin, ymax)
     ax.set_xlim(0, L)
     ax.set_title(
-        f"{noise_name} | sample {sample_idx} | across SNR (horizontal)")
-    ax.set_xlabel("Time (samples)")
-    ax.set_ylabel("Amplitude")
+        f"{noise_name} | {labels['sample']} {sample_idx} | {labels['across_snr']}")
+    ax.set_xlabel(labels["time_samples"])
+    ax.set_ylabel(labels["amplitude"])
 
     def init():
         ln_noisy.set_data([], [])
@@ -283,8 +332,10 @@ def animate_across_snr_horizontal(
         ln_clean.set_data(x, yb_cpu.squeeze(
             0).squeeze(0).detach().cpu().numpy())
         ax.set_xlim(offset, offset + L - 1)
-        ax.set_xlabel(f"Time (samples) | SNR idx = {frame}/{S-1}")
+        ax.set_xlabel(
+            f"{labels['time_samples']} | {labels['snr_idx']} = {frame}/{S-1}")
         return ln_noisy, ln_pred, ln_clean
+
     anim = FuncAnimation(fig, update, frames=range(
         S), init_func=init, interval=int(1000 / fps), blit=True)
     if show:
@@ -293,39 +344,25 @@ def animate_across_snr_horizontal(
 
 
 def plot_training_metrics(csv_path, language="en", save_path=None, y_min=0.0, y_max=1.0):
+    labels = _labels(language)
     plt.rc("font", family="Times New Roman")
     df = pd.read_csv(csv_path)
     plt.figure(figsize=(10, 6))
-    if language == "es":
-        plt.plot(df.index, df["Train Source Acc"], label="Exactitud de Entrenamiento (Fuente)",
-                 linewidth=1, linestyle="-", marker="x", markersize=5)
-        plt.plot(df.index, df["Train Target Acc"], label="Exactitud de Entrenamiento (Objetivo)",
-                 linewidth=1, linestyle="--", marker="s", markersize=5)
-        plt.plot(df.index, df["Val Source Acc"], label="Exactitud de Validación (Fuente)",
-                 linewidth=1, linestyle="-.", marker="^", markersize=5)
-        plt.plot(df.index, df["Val Target Acc"], label="Exactitud de Validación (Objetivo)",
-                 linewidth=1, linestyle=":", marker="d", markersize=5)
-        plt.title("Entrenamiento y Validación de Exactitud\n",
-                  fontsize=18, fontweight="bold")
-        plt.xlabel("Épocas", fontsize=18, fontweight="bold")
-        plt.ylabel("Exactitud", fontsize=18, fontweight="bold")
-    else:
-        plt.plot(df.index, df["Train Source Acc"], label="Training Accuracy (Source)",
-                 linewidth=1, linestyle="-", marker="x", markersize=5)
-        plt.plot(df.index, df["Train Target Acc"], label="Training Accuracy (Target)",
-                 linewidth=1, linestyle="--", marker="s", markersize=5)
-        plt.plot(df.index, df["Val Source Acc"], label="Validation Accuracy (Source)",
-                 linewidth=1, linestyle="-.", marker="^", markersize=5)
-        plt.plot(df.index, df["Val Target Acc"], label="Validation Accuracy (Target)",
-                 linewidth=1, linestyle=":", marker="d", markersize=5)
-        plt.title("Training and Validation Accuracy\n",
-                  fontsize=18, fontweight="bold")
-        plt.xlabel("Epochs", fontsize=18, fontweight="bold")
-        plt.ylabel("Accuracy", fontsize=18, fontweight="bold")
+    plt.plot(df.index, df["Train Source Acc"], label=labels["train"],
+             linewidth=1, linestyle="-", marker="x", markersize=5)
+    plt.plot(df.index, df["Train Target Acc"], label=labels["train_t"],
+             linewidth=1, linestyle="--", marker="s", markersize=5)
+    plt.plot(df.index, df["Val Source Acc"], label=labels["val"],
+             linewidth=1, linestyle="-.", marker="^", markersize=5)
+    plt.plot(df.index, df["Val Target Acc"], label=labels["val_t"],
+             linewidth=1, linestyle=":", marker="d", markersize=5)
+    plt.title(labels["title_acc"] + "\n", fontsize=24, fontweight="bold")
+    plt.xlabel(labels["epochs"], fontsize=24, fontweight="bold")
+    plt.ylabel(labels["accuracy"], fontsize=24, fontweight="bold")
     plt.ylim(y_min, y_max)
-    plt.xticks(ticks=range(0, len(df.index) + 5, 5), fontsize=20)
-    plt.yticks(fontsize=20)
-    plt.legend(loc="lower right", fontsize=14, labelspacing=1.5,
+    plt.xticks(ticks=range(0, len(df.index) + 5, 5), fontsize=24)
+    plt.yticks(fontsize=24)
+    plt.legend(loc="lower right", fontsize=24, labelspacing=1.5,
                borderpad=1.5, frameon=True, fancybox=True)
     plt.grid(True)
     if save_path:
@@ -369,6 +406,8 @@ def parse_args():
                     help="Do not save metrics CSV")
     ap.add_argument("--sr", type=int, default=DEFAULT_SR,
                     help="Sampling rate (Hz) for time axis")
+    ap.add_argument("--lang", choices=["es", "en"],
+                    default="es", help="Language for plot labels")
     return ap.parse_args()
 
 
@@ -416,6 +455,7 @@ def main():
                 show=args.show_plot if save_path is None else False,
                 sr=args.sr,
                 snr_db=db,
+                language=args.lang,
             )
         X_np = X_test.detach().cpu().numpy()
         y_np = y_test.detach().cpu().numpy()
@@ -446,6 +486,7 @@ def main():
                 sample_idx=max(0, min(args.sample_idx, M-1)),
                 fps=2,
                 show=True,
+                language=args.lang,
             )
     print("\n[OK] Inference and metrics complete.")
 
@@ -454,5 +495,5 @@ if __name__ == "__main__":
     main()
 
 
-# python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW --snr-idx 0 --sample-idx 0 --show-plot
+# python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW,ELPP --snr-idx 0 --sample-idx 0 --show-plot
 # python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW --sample-idx 0 --show-plot
