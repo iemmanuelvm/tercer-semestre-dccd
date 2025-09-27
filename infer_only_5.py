@@ -166,8 +166,8 @@ def _labels(lang: str) -> Dict[str, str]:
     if lang.lower().startswith("es"):
         return {
             "clean": "EEG limpio",
-            "noisy": "EEG ruidoso",
-            "denoised": "EEG desenruido",
+            "noisy": "EEG con artefactos",
+            "denoised": "EEG sin artefactos",
             "time_s": "Tiempo (s)",
             "time_samples": "Tiempo (muestras)",
             "amplitude": "Amplitud",
@@ -495,5 +495,5 @@ if __name__ == "__main__":
     main()
 
 
-# python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW,ELPP --snr-idx 0 --sample-idx 0 --show-plot
+# python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises ELPP --snr-idx 0 --sample-idx 0 --show-plot
 # python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW --sample-idx 0 --show-plot
