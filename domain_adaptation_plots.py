@@ -67,7 +67,7 @@ def plot_train_metrics_one(
     ax.set_title(t["title"], fontsize=24, fontweight="bold")
     ax.set_xlabel(t["x"], fontsize=24, fontweight="bold")
     ax.set_ylabel(t["y"], fontsize=24, fontweight="bold")
-    ax.tick_params(axis="both", labelsize=13)
+    ax.tick_params(axis="both", labelsize=24)
     ax.legend(loc="best", fontsize=24, frameon=True, fancybox=True)
     ax.grid(True, alpha=0.3)
 
