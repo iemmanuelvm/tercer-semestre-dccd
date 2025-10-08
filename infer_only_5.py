@@ -19,7 +19,7 @@ from utils.model import ResUNetTCN
 DEFAULT_CKPT = "./best_joint_denoiser.pt"
 DEFAULT_DATA_DIR = "./data/data_for_test"
 DEFAULT_OUT_DIR = "./inferences"
-DEFAULT_NOISES = ["EMG", "EOG", "CHEW", "SHIV"]
+DEFAULT_NOISES = ["EMG", "EOG", "CHEW", "SHIV", "ELPP"]
 DEFAULT_BS = 256
 DEFAULT_SR = 512
 
@@ -497,3 +497,4 @@ if __name__ == "__main__":
 
 # python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises ELPP --snr-idx 0 --sample-idx 0 --show-plot
 # python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW --sample-idx 0 --show-plot
+# python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW,ELPP --sample-idx 0 --show-plot --lang en
