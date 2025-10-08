@@ -105,6 +105,6 @@ def plot_divergence_metrics(
 if __name__ == "__main__":
     plot_divergence_metrics(
         "trainig_metrics.csv",
-        language="es",
+        language="en",
         save_dir="plots",
     )

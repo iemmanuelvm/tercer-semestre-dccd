@@ -83,6 +83,6 @@ def plot_train_metrics_one(
 if __name__ == "__main__":
     plot_train_metrics_one(
         "trainig_metrics.csv",
-        language="es",
+        language="en",
         save_dir="plots",
     )

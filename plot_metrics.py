@@ -127,6 +127,6 @@ def plot_regression_metrics(
 if __name__ == "__main__":
     plot_regression_metrics(
         "trainig_metrics.csv",
-        language="es",
+        language="en",
         save_dir="plots",
     )
