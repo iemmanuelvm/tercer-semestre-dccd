@@ -11,7 +11,7 @@ from utils.model import ResUNetTCN
 
 MODEL_CKPT = "./best_joint_denoiser.pt"
 OUT_DIR = "./inferences"
-NOISES = ["EMG", "EOG", "CHEW", "SHIV"]
+NOISES = ["EMG", "EOG", "CHEW", "SHIV", "ELPP"]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_AUTOMIX = torch.cuda.is_available()
 DEFAULT_BS = 256

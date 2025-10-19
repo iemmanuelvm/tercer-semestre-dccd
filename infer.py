@@ -153,6 +153,39 @@ def mse(ref: np.ndarray, est: np.ndarray) -> float:
     return float(np.mean((ref - est) ** 2))
 
 
+def rms(x: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(x**2) + 1e-12))
+
+
+def rmse(ref: np.ndarray, est: np.ndarray) -> float:
+    return float(np.sqrt(np.mean((ref - est) ** 2) + 1e-12))
+
+
+def rrmse_time(ref: np.ndarray, est: np.ndarray) -> float:
+    return rmse(ref, est) / (rms(ref) + 1e-12)
+
+
+def stft_magnitude(x: np.ndarray, nfft: int, hop: int) -> np.ndarray:
+    frames, _ = frame_signal(x, nfft, hop)
+    win = np.hanning(nfft).astype(np.float32)
+    frames_w = frames * win[None, :]
+    spec = np.fft.rfft(frames_w, n=nfft, axis=1)
+    mag = np.abs(spec).astype(np.float32)
+    return mag
+
+
+def rrmse_spectral(ref: np.ndarray, est: np.ndarray, nfft: int, hop: int) -> float:
+
+    R = stft_magnitude(ref, nfft, hop)
+    E = stft_magnitude(est, nfft, hop)
+    m = min(R.shape[0], E.shape[0])
+    R = R[:m]
+    E = E[:m]
+    num = np.sqrt(np.mean((E - R) ** 2) + 1e-12)
+    den = np.sqrt(np.mean(R ** 2) + 1e-12)
+    return float(num / (den + 1e-12))
+
+
 def corrcoef(ref: np.ndarray, est: np.ndarray) -> float:
     r = np.corrcoef(ref, est)[0, 1]
     if np.isnan(r):
@@ -184,7 +217,7 @@ def main():
                         help="Carpeta de salida")
 
     parser.add_argument("--win-len", type=int, default=2048,
-                        help="Tamaño de ventana (L)")
+                        help="Tamaño de ventana (L) para inferencia")
     parser.add_argument("--overlap", type=float, default=0.0,
                         help="Solapamiento entre 0.0 y 0.95 (0=sin solape)")
     parser.add_argument("--batch", type=int, default=256,
@@ -202,7 +235,19 @@ def main():
     parser.add_argument("--plot-seg", type=parse_range, default=None,
                         help="Segmento único START:END para graficar además de los previews por chunks")
 
+    parser.add_argument("--spec-nfft", type=int, default=1024,
+                        help="NFFT para el cálculo espectral de RRMSE")
+    parser.add_argument("--spec-hop", type=int, default=None,
+                        help="Hop para RRMSE espectral (por defecto nfft//2)")
+
     args = parser.parse_args()
+    if args.spec_nfft <= 1:
+        raise ValueError("--spec-nfft debe ser > 1")
+    if args.spec_hop is None:
+        args.spec_hop = args.spec_nfft // 2
+    else:
+        if args.spec_hop <= 0:
+            raise ValueError("--spec-hop debe ser > 0")
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -244,6 +289,12 @@ def main():
     mse_in = mse(clean, noisy)
     mse_out = mse(clean, denoised)
     r_out = corrcoef(clean, denoised)
+    rrmse_time_in = rrmse_time(clean, noisy)
+    rrmse_time_out = rrmse_time(clean, denoised)
+
+    rrmse_spec_in = rrmse_spectral(clean, noisy, args.spec_nfft, args.spec_hop)
+    rrmse_spec_out = rrmse_spectral(
+        clean, denoised, args.spec_nfft, args.spec_hop)
 
     metrics = {
         "win_len": args.win_len,
@@ -256,6 +307,12 @@ def main():
         "mse_in": mse_in,
         "mse_out": mse_out,
         "corr_out": r_out,
+        "rrmse_time_in": rrmse_time_in,
+        "rrmse_time_out": rrmse_time_out,
+        "rrmse_spec_in": rrmse_spec_in,
+        "rrmse_spec_out": rrmse_spec_out,
+        "spec_nfft": int(args.spec_nfft),
+        "spec_hop": int(args.spec_hop),
         "N_frames": int(X_win.shape[0]),
         "L_signal": int(L),
     }
@@ -314,9 +371,12 @@ def main():
     print("\n[OK] Inference finished.")
     print(f"  → Denoised: {den_path}")
     print(f"  → Metrics : {os.path.join(args.out_dir, 'metrics.json')}")
+    print(f"  → RRMSE time in/out: {rrmse_time_in:.6f} → {rrmse_time_out:.6f}")
+    print(f"  → RRMSE spec in/out: {rrmse_spec_in:.6f} → {rrmse_spec_out:.6f}")
     print(
         f"  → Previews: {n_gen} archivos en {args.out_dir} (tamaño {pw} y salto {ph})")
-    print(f"  SNR in/out (dB): {snr_in:.2f} → {snr_out:.2f} (Δ {imp:.2f} dB)")
+    print(
+        f"  SNR in/out (dB): {snr_in:.2f} → {snr_out:.2f} (Δ {snr_out - snr_in:.2f} dB)")
 
 
 if __name__ == "__main__":
@@ -329,4 +389,6 @@ if __name__ == "__main__":
 #   --ckpt "best_joint_denoiser.pt" ^
 #   --out-dir "inferences" ^
 #   --win-len 512 ^
-#   --overlap 1.0
+#   --overlap 1.0 ^
+#   --spec-nfft 1024 ^
+#   --spec-hop 512
