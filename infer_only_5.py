@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import gc
 import argparse
@@ -98,7 +95,44 @@ def infer_batched(model: nn.Module, X_test: torch.Tensor, device: torch.device, 
     return yhat
 
 
-def compute_all_metrics(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-12) -> Dict[str, np.ndarray]:
+def _make_window(L: int, name: Optional[str]) -> Optional[np.ndarray]:
+    if name is None:
+        return None
+    name = name.lower()
+    if name in ("hann", "hanning"):
+        return np.hanning(L)
+    if name in ("hamming",):
+        return np.hamming(L)
+    if name in ("blackman",):
+        return np.blackman(L)
+    raise ValueError(f"Unknown window: {name}")
+
+
+def _rfft_spectrum(x: np.ndarray, axis: int = -1, mode: str = "mag", window: Optional[str] = None) -> np.ndarray:
+    L = x.shape[axis]
+    w = _make_window(L, window)
+    if w is not None:
+        shp = [1]*x.ndim
+        shp[axis] = L
+        x = x * w.reshape(shp)
+    X = np.fft.rfft(x, axis=axis)
+    if mode == "complex":
+        return X
+    mag = np.abs(X)
+    if mode == "mag":
+        return mag
+    if mode == "power":
+        return mag**2
+    raise ValueError(f"Invalid spectral mode: {mode}")
+
+
+def compute_all_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    eps: float = 1e-12,
+    spectral_mode: str = "mag",
+    spectral_window: Optional[str] = None
+) -> Dict[str, np.ndarray]:
     assert y_true.shape == y_pred.shape, f"shape mismatch {y_true.shape} vs {y_pred.shape}"
     y_mean = y_true.mean(axis=-1, keepdims=True)
     p_mean = y_pred.mean(axis=-1, keepdims=True)
@@ -106,12 +140,19 @@ def compute_all_metrics(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-
     den = np.sqrt(np.sum((y_true - y_mean) ** 2, axis=-1) *
                   np.sum((y_pred - p_mean) ** 2, axis=-1)) + eps
     cc = num / den
-    err = y_pred - y_true
-    mse = np.mean(err ** 2, axis=-1)
+    err_t = y_pred - y_true
+    mse = np.mean(err_t ** 2, axis=-1)
     rmse = np.sqrt(mse)
-    rrmse = np.sqrt(np.sum(err ** 2, axis=-1) /
-                    (np.sum(y_true ** 2, axis=-1) + eps))
-    return {"CC": cc, "MSE": mse, "RMSE": rmse, "RRMSE": rrmse}
+    rrmse_temp = np.sqrt(np.sum(err_t ** 2, axis=-1) /
+                         (np.sum(y_true ** 2, axis=-1) + eps))
+    Yf = _rfft_spectrum(y_true, axis=-1, mode=spectral_mode,
+                        window=spectral_window)
+    Pf = _rfft_spectrum(y_pred, axis=-1, mode=spectral_mode,
+                        window=spectral_window)
+    err_f = Pf - Yf
+    rrmse_spec = np.sqrt(np.sum(np.abs(err_f) ** 2, axis=-1) /
+                         (np.sum(np.abs(Yf) ** 2, axis=-1) + eps))
+    return {"CC": cc, "MSE": mse, "RMSE": rmse, "RRMSE": rrmse_temp, "RRMSE_temp": rrmse_temp, "RRMSE_spec": rrmse_spec}
 
 
 def summarize_metrics_per_snr(metrics: Dict[str, np.ndarray]) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
@@ -460,8 +501,10 @@ def main():
         X_np = X_test.detach().cpu().numpy()
         y_np = y_test.detach().cpu().numpy()
         p_np = yhat_test.detach().cpu().numpy()
-        denoised_metrics = compute_all_metrics(y_np, p_np)
-        noisy_metrics = compute_all_metrics(y_np, X_np)
+        denoised_metrics = compute_all_metrics(
+            y_np, p_np, spectral_mode="power", spectral_window="hann")
+        noisy_metrics = compute_all_metrics(
+            y_np, X_np, spectral_mode="power", spectral_window="hann")
         denoised_snr = summarize_metrics_per_snr(denoised_metrics)
         noisy_snr = summarize_metrics_per_snr(noisy_metrics)
         denoised_overall = overall_means(denoised_metrics)
@@ -493,7 +536,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 # python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises ELPP --snr-idx 0 --sample-idx 0 --show-plot
 # python infer_only_5.py --checkpoint ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences --noises EMG,EOG,SHIV,CHEW --sample-idx 0 --show-plot
