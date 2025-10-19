@@ -26,7 +26,6 @@ def plot_train_metrics_one(
 
     texts = {
         "es": {
-            "title": "Métricas de Divergencia",
             "x": "Épocas",
             "y": "Valores",
             "legend": {
@@ -37,7 +36,6 @@ def plot_train_metrics_one(
             "fname": "metricas_entrenamiento.png",
         },
         "en": {
-            "title": "Divergence Metrics (Training)",
             "x": "Epochs",
             "y": "Values",
             "legend": {
@@ -57,16 +55,15 @@ def plot_train_metrics_one(
     fig, ax = plt.subplots(figsize=(10, 6))
 
     style = dict(linewidth=1.5, markersize=5)
-    ax.plot(x, df["train_KL"],      ":o",
-            label=t["legend"]["kl"],     **style)
-    ax.plot(x, df["train_JSD"],     ":^",
-            label=t["legend"]["jsd"],    **style)
-    ax.plot(x, df["train_JSDist"],  ":<",
-            label=t["legend"]["jsdist"], **style)
+    ax.plot(x, df["train_KL"], ":o", label=t["legend"]["kl"], **style)
+    ax.plot(x, df["train_JSD"], ":^", label=t["legend"]["jsd"], **style)
+    ax.plot(x, df["train_JSDist"], ":<", label=t["legend"]["jsdist"], **style)
 
-    ax.set_title(t["title"], fontsize=24, fontweight="bold")
     ax.set_xlabel(t["x"], fontsize=24, fontweight="bold")
     ax.set_ylabel(t["y"], fontsize=24, fontweight="bold")
+
+    ax.set_xticks(range(0, int(x.max()) + 1, 10))
+
     ax.tick_params(axis="both", labelsize=24)
     ax.legend(loc="best", fontsize=24, frameon=True, fancybox=True)
     ax.grid(True, alpha=0.3)
@@ -74,8 +71,11 @@ def plot_train_metrics_one(
     plt.tight_layout()
 
     if save_dir:
-        fig.savefig(os.path.join(
-            save_dir, t["fname"]), bbox_inches="tight", dpi=300)
+        fig.savefig(
+            os.path.join(save_dir, t["fname"]),
+            bbox_inches="tight",
+            dpi=300
+        )
 
     plt.show()
 
