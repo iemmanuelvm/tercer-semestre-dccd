@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Inferencia de EEG con ResUNetTCN, gráficos (contaminado/denoised/limpio)
-y métricas CC, MSE, RMSE, RRMSE por SNR y globales.
-
-Requisitos:
-  - numpy, torch, matplotlib
-  - (opcional) pandas para guardar CSV de métricas
-  - utils.model.ResUNetTCN disponible
-  - Datos de test en ./data/data_for_test/X_test_{NOISE}.npy y y_test_{NOISE}.npy
-  - Checkpoint del modelo en ./best_joint_denoiser.pt (por defecto)
-
-Ejemplo:
-  python eeg_infer_metrics.py --ckpt ./best_joint_denoiser.pt --data-dir ./data/data_for_test --out-dir ./inferences
-"""
-
 import os
 import gc
 import math
@@ -28,26 +10,18 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
-# ---- Modelo ----
-from utils.model import ResUNetTCN  # asegúrate de tenerlo en tu repo
+from utils.model import ResUNetTCN
 
-# =========================
-# Config por defecto
-# =========================
 DEFAULT_CKPT = "./best_joint_denoiser.pt"
 DEFAULT_DATA_DIR = "./data/data_for_test"
 DEFAULT_OUT_DIR = "./inferences"
 DEFAULT_NOISES = ["EMG", "EOG", "CHEW", "SHIV"]
 DEFAULT_BS = 256
 
-# Semillas
 torch.manual_seed(42)
 np.random.seed(42)
 
 
-# =========================
-# Utilidades de modelo / IO
-# =========================
 def load_model(ckpt_path: str, device: torch.device) -> nn.Module:
     ckpt = torch.load(ckpt_path, map_location=device)
     cfg = ckpt.get("config", None)
@@ -66,7 +40,6 @@ def load_test_tensors(data_dir: str, noise: str) -> Tuple[torch.Tensor, torch.Te
     y = np.load(os.path.join(data_dir, f"y_test_{noise}.npy"))
     X = torch.from_numpy(X).float()
     y = torch.from_numpy(y).float()
-    # Esperado: (S, M, C, L)
     if X.ndim != 4:
         raise ValueError(
             f"X_test shape inválido: {X.shape} (esperado 4D S,M,C,L)")
@@ -84,11 +57,6 @@ def infer_batched(
     start_bs: int = DEFAULT_BS,
     use_autocast: bool = True
 ) -> torch.Tensor:
-    """
-    Ejecuta inferencia en lotes dinámicos para evitar OOM.
-    X_test: (S, M, C, L)
-    Devuelve yhat con misma forma.
-    """
     S, M, C, L = X_test.shape
     N = S * M
     flat = X_test.reshape(N, C, L)
@@ -133,9 +101,6 @@ def infer_batched(
     return yhat
 
 
-# =========================
-# Métricas y resúmenes
-# =========================
 try:
     import pandas as pd
 except Exception:
@@ -143,24 +108,17 @@ except Exception:
 
 
 def compute_all_metrics(
-    y_true: np.ndarray,   # shape (S, M, C, L)
-    y_pred: np.ndarray,   # shape (S, M, C, L)
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
     eps: float = 1e-12
 ) -> Dict[str, np.ndarray]:
-    """
-    Devuelve dict con arrays (S, M, C):
-      CC, MSE, RMSE, RRMSE (RMSE / RMS(y_true))
-    """
     assert y_true.shape == y_pred.shape, f"shape mismatch {y_true.shape} vs {y_pred.shape}"
-    # medias por tiempo
     y_mean = y_true.mean(axis=-1, keepdims=True)
     p_mean = y_pred.mean(axis=-1, keepdims=True)
-    # CC (Pearson a lo largo de L)
     num = np.sum((y_true - y_mean) * (y_pred - p_mean), axis=-1)
     den = np.sqrt(np.sum((y_true - y_mean) ** 2, axis=-1) *
                   np.sum((y_pred - p_mean) ** 2, axis=-1)) + eps
     cc = num / den
-    # errores
     err = y_pred - y_true
     mse = np.mean(err ** 2, axis=-1)
     rmse = np.sqrt(mse)
@@ -170,10 +128,6 @@ def compute_all_metrics(
 
 
 def summarize_metrics_per_snr(metrics: Dict[str, np.ndarray]) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """
-    Colapsa sobre muestras y canales (M,C) -> estadísticos por SNR.
-    Retorna: metric -> (mean[S], std[S])
-    """
     out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
     for k, v in metrics.items():  # (S, M, C)
         mean_s = v.mean(axis=(1, 2))
@@ -197,7 +151,6 @@ def print_metric_summary(name: str, per_snr: Dict[str, Tuple[np.ndarray, np.ndar
         for k, (m, sd) in per_snr.items():
             row.append(f"{k}={m[s]:.4f}±{sd[s]:.4f}")
         print(f"  SNR[{s}]: " + " | ".join(row))
-    # global
     print("Global (promedio sobre S, M, C):")
     print(" | ".join([f"{k}={v:.4f}" for k, v in overall.items()]))
 
@@ -208,9 +161,6 @@ def maybe_save_metrics_csv(
     overall: Dict[str, float],
     out_dir: str,
 ):
-    """
-    Guarda CSV con medias/std por SNR + fila global (si pandas está disponible).
-    """
     if pd is None:
         print("[INFO] pandas no encontrado; omitiendo CSV.")
         return
@@ -223,7 +173,6 @@ def maybe_save_metrics_csv(
             row[f"{k}_mean"] = float(m[s])
             row[f"{k}_std"] = float(sd[s])
         rows.append(row)
-    # fila global
     rows.append({"noise": noise_name, "snr_idx": "ALL", **
                 {f"{k}_overall": v for k, v in overall.items()}})
     df = pd.DataFrame(rows)
@@ -232,13 +181,10 @@ def maybe_save_metrics_csv(
     print(f"[INFO] CSV de métricas guardado -> {csv_path}")
 
 
-# =========================
-# Gráficos
-# =========================
 def plot_eeg_triplet(
-    X_test: torch.Tensor,     # (S, M, C, L) contaminado
-    y_test: torch.Tensor,     # (S, M, C, L) limpio
-    yhat: torch.Tensor,       # (S, M, C, L) denoised
+    X_test: torch.Tensor,
+    y_test: torch.Tensor,
+    yhat: torch.Tensor,
     snr_idx: int = 0,
     sample_idx: int = 0,
     ch: int = 0,
@@ -248,9 +194,6 @@ def plot_eeg_triplet(
     save_path: Optional[str] = None,
     show: bool = False,
 ):
-    """
-    Grafica superpuesto: contaminated vs denoised vs clean (un SNR, una muestra, un canal).
-    """
     x_np = X_test[snr_idx, sample_idx, ch].detach().cpu().numpy()
     y_np = y_test[snr_idx, sample_idx, ch].detach().cpu().numpy()
     p_np = yhat[snr_idx, sample_idx, ch].detach().cpu().numpy()
@@ -260,7 +203,6 @@ def plot_eeg_triplet(
     seg = slice(max(0, start), max(0, end))
     t = np.arange(seg.start, seg.stop)
 
-    # Métricas del segmento mostrado
     m = compute_all_metrics(
         y_np[None, None, None, seg], p_np[None, None, None, seg])
     cc = float(m["CC"][0, 0, 0])
@@ -296,10 +238,6 @@ def animate_across_snr_horizontal(
     fps: int = 2,
     show: bool = True,
 ) -> FuncAnimation:
-    """
-    Anima el recorrido de SNR horizontalmente (paneo).
-    Si se pasa yhat_pred, se usa cache (no infiere por frame).
-    """
     S, M, C, L = X_test.shape
     assert C == 1, "Se esperaba 1 canal"
     device = device or torch.device(
@@ -377,9 +315,6 @@ def animate_across_snr_horizontal(
     return anim
 
 
-# =========================
-# Main (CLI)
-# =========================
 def parse_args():
     ap = argparse.ArgumentParser(
         description="Inferencia EEG + gráficos + métricas (CC, MSE, RMSE, RRMSE).")
@@ -441,17 +376,14 @@ def main():
         print(
             f"  X_test: {tuple(X_test.shape)} | y_test: {tuple(y_test.shape)}")
 
-        # ---- Inferencia (una sola vez, batched) ----
         yhat_test = infer_batched(
             model, X_test, device, start_bs=args.batch_size, use_autocast=use_autocast)
 
-        # Guardar predicciones + datos (útil para inspección posterior)
         pred_out = os.path.join(args.out_dir, f"pred_{noise}.pt")
         torch.save({"yhat": yhat_test, "X_test": X_test,
                    "y_test": y_test}, pred_out)
         print(f"  Predicciones guardadas -> {pred_out}")
 
-        # ---- Gráfico estático: contaminated vs denoised vs clean ----
         save_path = None if args.no_save_triplet else os.path.join(
             args.out_dir, f"triplet_{noise}.png")
         plot_eeg_triplet(
@@ -466,14 +398,13 @@ def main():
             show=args.show_plot if save_path is None else False
         )
 
-        # ---- Métricas: denoised vs clean y baseline (noisy vs clean) ----
         X_np = X_test.detach().cpu().numpy()
         y_np = y_test.detach().cpu().numpy()
         p_np = yhat_test.detach().cpu().numpy()
 
-        denoised_metrics = compute_all_metrics(y_np, p_np)   # (S,M,C)
+        denoised_metrics = compute_all_metrics(y_np, p_np)
         noisy_metrics = compute_all_metrics(
-            y_np, X_np)   # baseline (contaminated)
+            y_np, X_np)
 
         denoised_snr = summarize_metrics_per_snr(denoised_metrics)
         noisy_snr = summarize_metrics_per_snr(noisy_metrics)
